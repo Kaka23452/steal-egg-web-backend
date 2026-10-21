@@ -110,9 +110,16 @@ app.get('/events', async (req, res) => {
 // 5. Bot Webhook (Wispbyte Bot se data aayega)
 app.post('/api/bot-webhook', (req, res) => {
   const { tier, eggName, time } = req.body;
+  console.log(`📡 Received from Bot: [${tier}] - ${eggName}`); // 👈 Log add kiya
+  
   const payload = `data: ${JSON.stringify({ type: 'SPAWN', tier, eggName, time })}\n\n`;
   sseClients.forEach(client => { try { client.res.write(payload); } catch (e) {} });
   res.json({ success: true });
+});
+
+// 6. Health Check Endpoint (Test karne ke liye)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Backend is running smoothly' });
 });
 
 // ==================== WEB UI PAGES ====================
