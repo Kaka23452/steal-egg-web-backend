@@ -9,14 +9,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Config
+// 🔐 CONFIG
 const DB_URL = process.env.TIDB_DATABASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key';
 const MASTER_PASSWORD = process.env.MASTER_PASSWORD || 'admin123';
 
 let pool;
 
-// Database Setup
+// ==================== DATABASE SETUP ====================
 async function initDB() {
   try {
     pool = mysql.createPool(DB_URL);
@@ -37,20 +37,21 @@ async function initDB() {
 }
 initDB();
 
-// Master Admin Route (Add User)
+// ==================== API ROUTES ====================
+// 1. Master Admin (Add User)
 app.post('/api/master/add-user', async (req, res) => {
-  if (req.headers.masterpassword !== MASTER_PASSWORD) return res.status(401).send('Unauthorized');
+  if (req.headers.masterpassword !== MASTER_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
   const { email, password } = req.body;
   try {
     const hash = await bcrypt.hash(password, 10);
     await pool.query('INSERT INTO users (email, password_hash) VALUES (?, ?)', [email, hash]);
-    res.json({ success: true, message: 'User added' });
+    res.json({ success: true, message: 'User added successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Email already exists or DB error' });
   }
 });
 
-// Buyer Login
+// 2. Buyer Login
 app.post('/api/buyer/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -67,7 +68,7 @@ app.post('/api/buyer/login', async (req, res) => {
   }
 });
 
-// Generate API Key
+// 3. Generate API Key
 app.post('/api/buyer/generate-key', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).send('No token');
@@ -82,7 +83,7 @@ app.post('/api/buyer/generate-key', async (req, res) => {
   }
 });
 
-// SSE Endpoint for OBS
+// 4. SSE Endpoint for OBS
 let sseClients = new Map();
 app.get('/events', async (req, res) => {
   const { apiKey } = req.query;
@@ -106,12 +107,105 @@ app.get('/events', async (req, res) => {
   });
 });
 
-// Bot Webhook (Wispbyte se data aayega)
+// 5. Bot Webhook (Wispbyte Bot se data aayega)
 app.post('/api/bot-webhook', (req, res) => {
   const { tier, eggName, time } = req.body;
   const payload = `data: ${JSON.stringify({ type: 'SPAWN', tier, eggName, time })}\n\n`;
   sseClients.forEach(client => { try { client.res.write(payload); } catch (e) {} });
   res.json({ success: true });
+});
+
+// ==================== WEB UI PAGES ====================
+// Master Page (Aapke liye)
+app.get('/master', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Master Admin - Add User</title>
+    <style>body{font-family:sans-serif;background:#111;color:#fff;padding:50px;text-align:center;} input,button{padding:10px;margin:5px;border-radius:5px;border:none;} input{width:250px;} button{background:#0f0;color:#000;font-weight:bold;cursor:pointer;}</style>
+    </head>
+    <body>
+      <h2>Master Admin: Add New Buyer</h2>
+      <input type="password" id="masterpass" placeholder="Master Password"><br>
+      <input type="email" id="email" placeholder="Buyer Email"><br>
+      <input type="password" id="password" placeholder="Buyer Password"><br>
+      <button onclick="addUser()">Add User</button>
+      <p id="msg"></p>
+      <script>
+        async function addUser() {
+          const masterpass = document.getElementById('masterpass').value;
+          const email = document.getElementById('email').value;
+          const password = document.getElementById('password').value;
+          const res = await fetch('/api/master/add-user', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'masterpassword': masterpass},
+            body: JSON.stringify({email, password})
+          });
+          const data = await res.json();
+          document.getElementById('msg').innerText = data.success ? '✅ User Added!' : '❌ ' + (data.error || 'Error');
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Generator Page (Buyer ke liye)
+app.get('/generator', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Generator - Get API Key</title>
+    <style>body{font-family:sans-serif;background:#111;color:#fff;padding:50px;text-align:center;} input,button{padding:10px;margin:5px;border-radius:5px;border:none;} input{width:250px;} button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer;} .key-box{background:#222;padding:15px;border:1px solid #0f0;font-size:20px;margin-top:15px;word-break:break-all; display:none;}</style>
+    </head>
+    <body>
+      <h2>Buyer Login & Generate Key</h2>
+      <div id="loginBox">
+        <input type="email" id="email" placeholder="Email"><br>
+        <input type="password" id="password" placeholder="Password"><br>
+        <button onclick="login()">Login</button>
+      </div>
+      <div id="genBox" style="display:none;">
+        <button onclick="generateKey()">Generate API Key</button>
+        <div id="keyBox" class="key-box"></div>
+      </div>
+      <p id="msg"></p>
+      <script>
+        let userToken = '';
+        async function login() {
+          const email = document.getElementById('email').value;
+          const password = document.getElementById('password').value;
+          const res = await fetch('/api/buyer/login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({email, password})
+          });
+          const data = await res.json();
+          if(data.success) {
+            userToken = data.token;
+            document.getElementById('loginBox').style.display = 'none';
+            document.getElementById('genBox').style.display = 'block';
+          } else {
+            document.getElementById('msg').innerText = '❌ ' + data.error;
+          }
+        }
+        async function generateKey() {
+          const res = await fetch('/api/buyer/generate-key', {
+            method: 'POST',
+            headers: {'Authorization': 'Bearer ' + userToken}
+          });
+          const data = await res.json();
+          if(data.success) {
+            document.getElementById('keyBox').style.display = 'block';
+            document.getElementById('keyBox').innerText = data.apiKey;
+          } else {
+            document.getElementById('msg').innerText = '❌ ' + data.error;
+          }
+        }
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 const PORT = process.env.PORT || 3000;
