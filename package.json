@@ -1,17 +1,13 @@
 {
-  "name": "steal-an-egg-discord-spawn-tracker",
+  "name": "steal-egg-saas-backend",
   "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=20"
-  },
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
   "dependencies": {
+    "express": "^4.21.1",
     "cors": "^2.8.5",
-    "discord.js": "^14.21.0",
-    "express": "^5.1.0"
+    "mysql2": "^3.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3"
   }
 }
