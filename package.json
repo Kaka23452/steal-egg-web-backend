@@ -1,0 +1,17 @@
+{
+  "name": "steal-an-egg-discord-spawn-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "discord.js": "^14.21.0",
+    "express": "^5.1.0"
+  }
+}
