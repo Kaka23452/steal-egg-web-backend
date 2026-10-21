@@ -1,4 +1,4 @@
-# Steal An Egg Discord Spawn Tracker — JustRunMy deployment
+# Steal An Egg Discord Spawn Tracker —  deployment
 
 ## Upload / deploy
 1. Open JustRunMy.App and create an app using **Zip Upload**.
