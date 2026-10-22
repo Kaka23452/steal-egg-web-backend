@@ -1,4 +1,4 @@
-```js
+
 'use strict';
 
 const express = require('express');
@@ -24,8 +24,10 @@ const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1000;
 let pool = null;
 let dbReady = false;
 
-const sseClients = new Map();
+// Latest spawn events kept in memory.
+// Events reset when the service restarts.
 const spawnEvents = new Map();
+const sseClients = new Map();
 
 // ==================== MIDDLEWARE ====================
 app.use(cors({
@@ -38,10 +40,11 @@ app.use(express.json({ limit: '100kb' }));
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
   next();
 });
 
-// ==================== HELPERS ====================
+// ==================== COMMON HELPERS ====================
 function requireDatabase(req, res, next) {
   if (!dbReady || !pool) {
     return res.status(503).json({
@@ -56,41 +59,46 @@ function safeError(error) {
   return 'An internal server error occurred.';
 }
 
-function clean(value) {
+function timingSafeStringEqual(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+
+  if (left.length !== right.length || left.length === 0) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(left, right);
+}
+
+function cleanText(value) {
   return String(value ?? '')
     .replace(/\r\n?/g, '\n')
-    .replace(/\u200B/g, '')
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1')
+    .replace(/<https?:\/\/[^>]+>/g, '')
+    .replace(/<a?:\w+:\d+>/g, '')
+    .replace(/<@!?\d+>|<@&\d+>|<#\d+>/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/`/g, '')
     .trim();
 }
 
-// IMPORTANT: no backtick regex here, so the previous syntax error is avoided.
-function normalizeName(value) {
-  return clean(value)
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/^[*_~\s]+|[*_~\s]+$/g, '')
-    .trim();
-}
-
-function parseLabel(text, labels) {
+function extractLabel(text, labels) {
   const escaped = labels.map(label =>
     label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   );
 
   const regex = new RegExp(
-    '(?:^|\\n)\\s*(?:' + escaped.join('|') +
-    ')\\s*[:：\\-–—]\\s*([^\\n]+)',
+    '^\\s*(?:' + escaped.join('|') +
+    ')\\s*[:：\\-–—]\\s*(.*?)\\s*$',
     'im'
   );
 
   const match = String(text || '').match(regex);
-  return match ? normalizeName(match[1]) : '';
+  return match ? cleanText(match[1]).replace(/\n/g, ' ').trim() : '';
 }
 
-// ==================== TIER PARSING ====================
-const KNOWN_TIERS = [
+const TIERS = [
   'Common',
   'Uncommon',
   'Rare',
@@ -104,228 +112,273 @@ const KNOWN_TIERS = [
   'Transcendent'
 ];
 
-function canonicalTier(value) {
-  return KNOWN_TIERS.find(
-    tier => tier.toLowerCase() === String(value || '').toLowerCase()
-  ) || 'Unknown';
-}
+function normalizeTier(value, text) {
+  const supplied = String(value || '').trim();
 
-function parseTier(text, suppliedTier) {
-  const explicit = canonicalTier(suppliedTier);
-  if (explicit !== 'Unknown') return explicit;
-
-  const labeled = parseLabel(text, [
-    'Tier',
-    'Rarity',
-    'Egg Tier',
-    'Spawn Tier'
-  ]);
-
-  if (labeled) {
-    const match = labeled.match(
-      /\b(Common|Uncommon|Rare|Epic|Legendary|Mythic|Secret|Divine|Eternal|Cosmic|Transcendent)\b/i
+  if (supplied) {
+    const found = TIERS.find(t =>
+      t.toLowerCase() === supplied.toLowerCase()
     );
-
-    if (match) return canonicalTier(match[1]);
+    if (found) return found;
   }
 
-  const alert = String(text || '').match(
-    /\b(Common|Uncommon|Rare|Epic|Legendary|Mythic|Secret|Divine|Eternal|Cosmic|Transcendent)\s+Egg\s+(?:Spawned|Spawn)\b/i
+  // Prefer explicit tier/rarity labels.
+  const labeled = extractLabel(text, ['Tier', 'Rarity']);
+  if (labeled) {
+    const found = TIERS.find(t =>
+      t.toLowerCase() === labeled.toLowerCase()
+    );
+    if (found) return found;
+  }
+
+  // Only accept a tier used in a spawn heading.
+  const heading = String(text || '').match(
+    /^\s*(Common|Uncommon|Rare|Epic|Legendary|Mythic|Secret|Divine|Eternal|Cosmic|Transcendent)\s+Egg\s+(?:Spawned|Spawn)\b/im
   );
 
-  return alert ? canonicalTier(alert[1]) : 'Unknown';
+  if (heading) {
+    return TIERS.find(t =>
+      t.toLowerCase() === heading[1].toLowerCase()
+    ) || 'Unknown';
+  }
+
+  return 'Unknown';
 }
 
-// ==================== TIME PARSING ====================
-function parseSpawnedSeconds(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
+function parseElapsedSeconds(value) {
+  const text = String(value || '').trim().toLowerCase();
+
+  if (!text || /unknown|n\/a|none/.test(text)) return null;
+
+  // Example: "Spawned: 5 minutes ago"
+  const ago = text.match(
+    /(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\s*ago/
+  );
+
+  if (ago) {
+    const n = Number(ago[1]);
+    const unit = ago[2];
+
+    const multiplier =
+      /^s/.test(unit) ? 1 :
+      /^m/.test(unit) ? 60 :
+      /^h/.test(unit) ? 3600 : 86400;
+
+    return Math.max(0, Math.floor(n * multiplier));
   }
 
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return Math.max(0, Math.floor(value));
+  // Example: "5m ago", "2h ago", or "30s ago"
+  const compact = text.match(/(\d+)\s*(s|m|h|d)\s*ago/);
+
+  if (compact) {
+    const n = Number(compact[1]);
+    const multiplier = { s: 1, m: 60, h: 3600, d: 86400 }[compact[2]];
+    return n * multiplier;
   }
 
-  const text = String(value).toLowerCase();
-  let total = 0;
-  let found = false;
+  // An unqualified value such as "16:10" is not elapsed duration.
+  return null;
+}
 
-  const units = [
-    [/(\d+(?:\.\d+)?)\s*(?:d|days?)\b/g, 86400],
-    [/(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)\b/g, 3600],
-    [/(\d+(?:\.\d+)?)\s*(?:m|mins?|minutes?)\b/g, 60],
-    [/(\d+(?:\.\d+)?)\s*(?:s|secs?|seconds?)\b/g, 1]
-  ];
+function parseFutureSeconds(value) {
+  const text = String(value || '').trim().toLowerCase();
 
-  for (const [regex, factor] of units) {
-    for (const match of text.matchAll(regex)) {
-      total += Number(match[1]) * factor;
-      found = true;
+  const match = text.match(
+    /(?:in\s+)?(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b/
+  );
+
+  if (!match || !/\bin\b/.test(text)) return null;
+
+  const n = Number(match[1]);
+  const unit = match[2];
+
+  const multiplier =
+    /^s/.test(unit) ? 1 :
+    /^m/.test(unit) ? 60 : 3600;
+
+  return Math.max(0, Math.floor(n * multiplier));
+}
+
+function normalizeSpawn(body) {
+  const rawEgg = cleanText(body.eggName ?? body.egg ?? '');
+  const rawLocation = cleanText(body.location ?? body.biome ?? '');
+  const rawSpawned = cleanText(body.spawned ?? body.spawnTime ?? '');
+
+  // Some older bot versions send the entire Discord message in eggName.
+  const rawText = [
+    typeof body.message === 'string' ? body.message : '',
+    typeof body.content === 'string' ? body.content : '',
+    typeof body.description === 'string' ? body.description : '',
+    rawEgg
+  ].filter(Boolean).join('\n');
+
+  let eggName = rawEgg;
+  let location = rawLocation;
+  let spawned = rawSpawned;
+
+  if (!location || location.toLowerCase() === 'unknown') {
+    location = extractLabel(rawText, ['Location', 'Biome', 'Area']) || location;
+  }
+
+  if (!spawned || spawned.toLowerCase() === 'unknown') {
+    spawned = extractLabel(rawText, [
+      'Spawned',
+      'Time Since Spawn',
+      'Spawn Time'
+    ]) || spawned;
+  }
+
+  // Extract egg from a full multiline/Markdown alert if needed.
+  if (
+    !eggName ||
+    eggName.length > 120 ||
+    /(?:location|biome|spawned|recommended speed|join game)\s*:/i.test(eggName)
+  ) {
+    const labeledEgg = extractLabel(rawText, [
+      'Egg Name',
+      'Spawned Egg',
+      'Egg',
+      'Pet Name'
+    ]);
+
+    if (labeledEgg && labeledEgg.length <= 120) {
+      eggName = labeledEgg;
+    } else {
+      const lines = rawText.split('\n').map(cleanText).filter(Boolean);
+
+      const candidate = lines.find(line => {
+        if (line.length > 100) return false;
+        if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(line)) return false;
+        if (/^(?:Common|Uncommon|Rare|Epic|Legendary|Mythic|Secret|Divine|Eternal|Cosmic|Transcendent)\s+Egg\s+(?:Spawned|Spawn)!*$/i.test(line)) return false;
+        if (/^(?:tier|rarity|location|biome|area|spawned|spawn time|time since spawn|time|money|recommended speed|join game)\s*:/i.test(line)) return false;
+        if (/^https?:\/\//i.test(line)) return false;
+        if (/^(?:unknown|none|n\/a)$/i.test(line)) return false;
+        return true;
+      });
+
+      if (candidate) eggName = candidate;
     }
   }
 
-  return found ? Math.max(0, Math.floor(total)) : null;
-}
+  eggName = cleanText(eggName).replace(/\n/g, ' ').trim();
 
-function parseTimestamp(body) {
-  const value = body.time ?? body.timestamp ?? body.createdAt;
-
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value < 100000000000 ? value * 1000 : value;
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-
-  return Date.now();
-}
-
-// ==================== SPAWN PARSER ====================
-function parseSpawn(body) {
-  const rawText = [
-    body.content,
-    body.message,
-    body.description,
-    body.eggName,
-    body.egg,
-    body.location,
-    body.biome,
-    body.tier,
-    body.rarity,
-    body.spawned
-  ].filter(Boolean).join('\n');
-
-  const eggName = normalizeName(
-    body.eggName ||
-    body.egg ||
-    parseLabel(rawText, [
-      'Egg Name',
-      'Egg',
-      'Spawned Egg',
-      'Pet Name',
-      'Pet',
-      'Name'
-    ])
-  );
-
+  // Never use a clock time or generic label as a pet name.
   if (
     !eggName ||
-    /^(unknown|none|n\/a)$/i.test(eggName)
+    eggName.length > 120 ||
+    /^\d{1,2}:\d{2}(?::\d{2})?$/.test(eggName) ||
+    /^(?:unknown|none|n\/a|spawned|yes|true)$/i.test(eggName)
   ) {
     return null;
   }
 
-  const tier = parseTier(rawText, body.tier || body.rarity);
+  const tier = normalizeTier(body.tier ?? body.rarity, rawText);
 
-  const location = normalizeName(
-    body.location ||
-    body.biome ||
-    parseLabel(rawText, [
-      'Location',
-      'Biome',
-      'Area',
-      'Spawn Location'
-    ])
-  ) || 'Unknown';
+  const eventTimestamp = Date.now();
+  const elapsedSeconds = parseElapsedSeconds(spawned);
+  const futureSeconds = parseFutureSeconds(spawned);
 
-  const spawned = normalizeName(
-    body.spawned ||
-    parseLabel(rawText, [
-      'Spawned Ago',
-      'Spawned',
-      'Spawn Time',
-      'Time Since Spawn',
-      'Elapsed'
-    ])
-  ) || 'Unknown';
+  // Use a valid supplied timestamp only as event metadata.
+  let messageTimestamp = eventTimestamp;
+  const suppliedTime = body.timestamp ?? body.time;
 
-  const elapsedSeconds = parseSpawnedSeconds(
-    body.elapsedSeconds ?? body.spawnedSeconds ?? spawned
-  );
+  if (suppliedTime !== undefined && suppliedTime !== null) {
+    const parsed = typeof suppliedTime === 'number'
+      ? suppliedTime
+      : Date.parse(String(suppliedTime));
 
-  const timestampMs = parseTimestamp(body);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      messageTimestamp = parsed;
+    }
+  }
 
   return {
+    id: String(body.messageId || crypto.randomUUID()),
     type: 'SPAWN',
-    tier,
+    petName: eggName,
     eggName,
     egg: eggName,
-    location,
-    biome: location,
-    spawned,
+    tier,
+    location: location || 'Unknown',
+    biome: location || 'Unknown',
+    spawned: spawned || 'Unknown',
     elapsedSeconds,
-    time: timestampMs,
-    timestamp: new Date(timestampMs).toISOString(),
+    futureSeconds,
+    timestamp: messageTimestamp,
+    receivedAt: eventTimestamp,
     source: body.source || 'Discord',
-    messageId: body.messageId || null,
-    channelId: body.channelId || null
+    messageId: body.messageId ? String(body.messageId) : null,
+    channelId: body.channelId ? String(body.channelId) : null
   };
 }
 
-// ==================== EVENT STORAGE ====================
 function pruneEvents() {
   const cutoff = Date.now() - MAX_EVENT_AGE_MS;
 
   for (const [id, event] of spawnEvents) {
-    if (event.time < cutoff) spawnEvents.delete(id);
+    if (event.receivedAt < cutoff) spawnEvents.delete(id);
   }
 
   while (spawnEvents.size > MAX_EVENTS) {
-    const firstKey = spawnEvents.keys().next().value;
-    spawnEvents.delete(firstKey);
+    const oldestId = spawnEvents.keys().next().value;
+    spawnEvents.delete(oldestId);
   }
 }
 
-function toScheduleRecord(event) {
-  const elapsedSinceReceipt = Math.max(
+function publicScheduleEvent(event) {
+  const ageSeconds = Math.max(
     0,
     Math.floor((Date.now() - event.receivedAt) / 1000)
   );
 
-  const elapsedSeconds = event.elapsedSeconds === null
-    ? null
-    : event.elapsedSeconds + elapsedSinceReceipt;
+  // Existing V290 expects remainingSeconds.
+  // This field is only a compatibility value; it is NOT the elapsed timer.
+  const remainingSeconds = event.futureSeconds !== null
+    ? Math.max(0, event.futureSeconds - ageSeconds)
+    : 0;
+
+  const elapsedSeconds = event.elapsedSeconds !== null
+    ? event.elapsedSeconds + ageSeconds
+    : null;
 
   return {
-    petName: event.eggName,
+    id: event.id,
+    petName: event.petName,
     eggName: event.eggName,
+    egg: event.egg,
     tier: event.tier,
     location: event.location,
     biome: event.biome,
     spawned: event.spawned,
     timestamp: event.timestamp,
-    time: event.time,
-    elapsedSeconds,
-    remainingSeconds: 0,
+    receivedAt: event.receivedAt,
     source: event.source,
     messageId: event.messageId,
-    channelId: event.channelId
+    channelId: event.channelId,
+    remainingSeconds,
+    elapsedSeconds,
+    timerMode: event.elapsedSeconds !== null
+      ? 'elapsed'
+      : event.futureSeconds !== null
+        ? 'countdown'
+        : 'unknown'
   };
 }
 
-function sendSSE(event) {
-  const payload = 'data: ' + JSON.stringify(event) + '\n\n';
-  let delivered = 0;
+function broadcastEvent(event) {
+  const payload = `data: ${JSON.stringify({
+    type: 'SPAWN',
+    event: publicScheduleEvent(event)
+  })}\n\n`;
 
   for (const [id, client] of sseClients) {
     try {
-      if (client.res.destroyed || client.res.writableEnded) {
-        clearInterval(client.heartbeat);
-        sseClients.delete(id);
-        continue;
-      }
-
       client.res.write(payload);
-      delivered++;
     } catch (_) {
       clearInterval(client.heartbeat);
       sseClients.delete(id);
     }
   }
-
-  return delivered;
 }
 
 // ==================== DATABASE SETUP ====================
@@ -367,13 +420,9 @@ app.post('/api/master/add-user', requireDatabase, async (req, res) => {
     });
   }
 
-  const supplied = Buffer.from(String(req.get('masterpassword') || ''));
-  const expected = Buffer.from(MASTER_PASSWORD);
+  const suppliedPassword = req.get('masterpassword') || '';
 
-  if (
-    supplied.length !== expected.length ||
-    !crypto.timingSafeEqual(supplied, expected)
-  ) {
+  if (!timingSafeStringEqual(suppliedPassword, MASTER_PASSWORD)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -381,9 +430,7 @@ app.post('/api/master/add-user', requireDatabase, async (req, res) => {
   const password = String(req.body.password || '');
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({
-      error: 'Enter a valid email address.'
-    });
+    return res.status(400).json({ error: 'Enter a valid email address.' });
   }
 
   if (password.length < 8 || password.length > 200) {
@@ -400,17 +447,12 @@ app.post('/api/master/add-user', requireDatabase, async (req, res) => {
       [email, hash]
     );
 
-    return res.json({
-      success: true,
-      message: 'User added successfully'
-    });
+    return res.json({ success: true, message: 'User added successfully' });
   } catch (error) {
     console.error('Add user failed:', error.message);
 
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({
-        error: 'Email already exists.'
-      });
+      return res.status(409).json({ error: 'Email already exists.' });
     }
 
     return res.status(500).json({ error: safeError(error) });
@@ -423,15 +465,7 @@ app.post('/api/buyer/login', requireDatabase, async (req, res) => {
   const password = String(req.body.password || '');
 
   if (!email || !password) {
-    return res.status(400).json({
-      error: 'Email and password are required.'
-    });
-  }
-
-  if (JWT_SECRET.length < 32) {
-    return res.status(503).json({
-      error: 'Server authentication is not configured securely.'
-    });
+    return res.status(400).json({ error: 'Email and password are required.' });
   }
 
   try {
@@ -441,18 +475,19 @@ app.post('/api/buyer/login', requireDatabase, async (req, res) => {
     );
 
     if (!rows.length) {
-      return res.status(401).json({
-        error: 'Invalid or blocked account'
-      });
+      return res.status(401).json({ error: 'Invalid or blocked account' });
     }
 
-    const matches = await bcrypt.compare(
-      password,
-      rows[0].password_hash
-    );
+    const matches = await bcrypt.compare(password, rows[0].password_hash);
 
     if (!matches) {
       return res.status(401).json({ error: 'Wrong password' });
+    }
+
+    if (JWT_SECRET.length < 32) {
+      return res.status(503).json({
+        error: 'Server authentication is not configured securely.'
+      });
     }
 
     const token = jwt.sign(
@@ -470,19 +505,22 @@ app.post('/api/buyer/login', requireDatabase, async (req, res) => {
 
 // ==================== GENERATE API KEY ====================
 app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const authorization = req.headers.authorization || '';
+  const token = authorization.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : '';
 
   if (!token) {
     return res.status(401).json({ error: 'Login required.' });
   }
 
-  if (JWT_SECRET.length < 32) {
-    return res.status(503).json({
-      error: 'Server authentication is not configured securely.'
-    });
-  }
-
   try {
+    if (JWT_SECRET.length < 32) {
+      return res.status(503).json({
+        error: 'Server authentication is not configured securely.'
+      });
+    }
+
     const decoded = jwt.verify(token, JWT_SECRET);
 
     const newApiKey =
@@ -494,9 +532,7 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
     );
 
     if (!result.affectedRows) {
-      return res.status(401).json({
-        error: 'Account is missing or blocked.'
-      });
+      return res.status(401).json({ error: 'Account is missing or blocked.' });
     }
 
     return res.json({ success: true, apiKey: newApiKey });
@@ -505,9 +541,7 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
       error.name === 'JsonWebTokenError' ||
       error.name === 'TokenExpiredError'
     ) {
-      return res.status(401).json({
-        error: 'Invalid or expired token.'
-      });
+      return res.status(401).json({ error: 'Invalid or expired token.' });
     }
 
     console.error('API key generation failed:', error.message);
@@ -515,71 +549,116 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
   }
 });
 
-// ==================== API KEY VALIDATION ====================
-async function isValidApiKey(apiKey) {
-  if (!apiKey || !pool || !dbReady) return false;
+// ==================== SPAWN WEBHOOK ====================
+app.post('/api/bot-webhook', (req, res) => {
+  if (WEBHOOK_SECRET) {
+    const supplied = req.get('x-webhook-secret') || '';
 
-  const [rows] = await pool.query(
-    'SELECT email FROM users WHERE api_key = ? AND is_active = TRUE LIMIT 1',
-    [apiKey]
-  );
-
-  return rows.length > 0;
-}
-
-// ==================== V290 SCHEDULE API ====================
-app.get('/api/schedule', requireDatabase, async (req, res) => {
-  try {
-    const apiKey = String(
-      req.query.apiKey || req.get('x-api-key') || ''
+    if (!timingSafeStringEqual(supplied, WEBHOOK_SECRET)) {
+      return res.status(401).json({ error: 'Invalid webhook secret.' });
+    }
+  } else {
+    console.warn(
+      '[SECURITY WARNING] WEBHOOK_SECRET is not configured; webhook is unauthenticated.'
     );
+  }
 
-    if (!apiKey || !(await isValidApiKey(apiKey))) {
-      return res.status(401).json({
-        error: 'Missing or invalid API key.'
+  const body = req.body || {};
+
+  if (!body.eggName && !body.egg && !body.message && !body.content &&
+      !body.description) {
+    return res.status(400).json({
+      error: 'Missing spawn data. Provide eggName/egg or message content.'
+    });
+  }
+
+  try {
+    const event = normalizeSpawn(body);
+
+    if (!event) {
+      return res.status(400).json({
+        error: 'Could not extract a valid egg/pet name from the spawn alert.'
       });
     }
 
+    // De-duplicate repeated delivery of the same Discord message.
+    const id = event.messageId || event.id;
+    if (spawnEvents.has(id)) {
+      return res.json({
+        success: true,
+        duplicate: true,
+        connectedClients: sseClients.size
+      });
+    }
+
+    spawnEvents.set(id, event);
     pruneEvents();
+    broadcastEvent(event);
 
-    const schedules = [...spawnEvents.values()]
-      .sort((a, b) => b.time - a.time)
-      .map(toScheduleRecord);
-
-    const latest = schedules[0] || null;
+    console.log('[SPAWN RECEIVED]', JSON.stringify({
+      tier: event.tier,
+      eggName: event.eggName,
+      location: event.location,
+      spawned: event.spawned,
+      messageId: event.messageId,
+      connectedClients: sseClients.size
+    }));
 
     return res.json({
       success: true,
-      discordConnected: true,
-      lastMessage: latest ? {
-        eggName: latest.eggName,
-        tier: latest.tier,
-        location: latest.location,
-        spawned: latest.spawned,
-        timestamp: latest.timestamp
-      } : null,
-      schedules
+      connectedClients: sseClients.size,
+      parsed: {
+        petName: event.petName,
+        tier: event.tier,
+        location: event.location,
+        spawned: event.spawned,
+        timerMode: event.elapsedSeconds !== null
+          ? 'elapsed'
+          : event.futureSeconds !== null
+            ? 'countdown'
+            : 'unknown'
+      }
     });
   } catch (error) {
-    console.error('Schedule API failed:', error.message);
-    return res.status(500).json({
-      error: 'Could not load schedules.'
-    });
+    console.error('Webhook processing failed:', error.message);
+    return res.status(500).json({ error: 'Could not process spawn event.' });
   }
 });
 
-// ==================== SSE STREAM ====================
+// ==================== SCHEDULE API FOR V290 ====================
+// Public schedule data contains game spawn alerts only, never API keys.
+app.get('/api/schedule', (req, res) => {
+  pruneEvents();
+
+  const schedules = [...spawnEvents.values()]
+    .sort((a, b) => b.receivedAt - a.receivedAt)
+    .map(publicScheduleEvent);
+
+  const latest = schedules[0] || null;
+
+  return res.json({
+    success: true,
+    discordConnected: true,
+    lastMessage: latest
+      ? `${latest.petName} · ${latest.tier} · ${latest.location}`
+      : null,
+    schedules
+  });
+});
+
+// ==================== AUTHENTICATED SSE STREAM ====================
 app.get('/events', requireDatabase, async (req, res) => {
   const apiKey = String(req.query.apiKey || '');
 
-  if (!apiKey) {
-    return res.status(401).send('API Key required');
-  }
+  if (!apiKey) return res.status(401).send('API Key required');
 
   try {
-    if (!(await isValidApiKey(apiKey))) {
-      return res.status(401).send('Invalid API Key');
-    }
+    const [rows] = await pool.query(
+      'SELECT email FROM users WHERE api_key = ? AND is_active = TRUE LIMIT 1',
+      [apiKey]
+    );
+
+    if (!rows.length) return res.status(401).send('Invalid API Key');
 
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -587,7 +666,6 @@ app.get('/events', requireDatabase, async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
-
     res.write(': connected\n\n');
 
     const clientId = crypto.randomUUID();
@@ -600,8 +678,12 @@ app.get('/events', requireDatabase, async (req, res) => {
 
     sseClients.set(clientId, { res, heartbeat });
 
-    for (const event of spawnEvents.values()) {
-      res.write('data: ' + JSON.stringify(event) + '\n\n');
+    // Send recent events when a client first connects.
+    for (const event of [...spawnEvents.values()].slice(-50)) {
+      res.write(`data: ${JSON.stringify({
+        type: 'SPAWN',
+        event: publicScheduleEvent(event)
+      })}\n\n`);
     }
 
     req.on('close', () => {
@@ -620,78 +702,10 @@ app.get('/events', requireDatabase, async (req, res) => {
   }
 });
 
-// ==================== WISPB YTE WEBHOOK ====================
-app.post('/api/bot-webhook', (req, res) => {
-  if (WEBHOOK_SECRET) {
-    const supplied = Buffer.from(req.get('x-webhook-secret') || '');
-    const expected = Buffer.from(WEBHOOK_SECRET);
-
-    if (
-      supplied.length !== expected.length ||
-      !crypto.timingSafeEqual(supplied, expected)
-    ) {
-      return res.status(401).json({
-        error: 'Invalid webhook secret.'
-      });
-    }
-  } else {
-    console.warn(
-      '[SECURITY WARNING] WEBHOOK_SECRET is not configured; webhook is unauthenticated.'
-    );
-  }
-
-  try {
-    const event = parseSpawn(req.body || {});
-
-    if (!event) {
-      return res.status(400).json({
-        error: 'Could not parse egg name from spawn payload.'
-      });
-    }
-
-    const id = event.messageId
-      ? `${event.channelId || ''}:${event.messageId}`
-      : crypto.randomUUID();
-
-    if (!spawnEvents.has(id)) {
-      event.receivedAt = Date.now();
-      spawnEvents.set(id, event);
-    }
-
-    pruneEvents();
-
-    const delivered = sendSSE(event);
-
-    console.log('[SPAWN WEBHOOK]', JSON.stringify({
-      eggName: event.eggName,
-      tier: event.tier,
-      location: event.location,
-      spawned: event.spawned,
-      messageId: event.messageId,
-      delivered
-    }));
-
-    return res.json({
-      success: true,
-      event: {
-        eggName: event.eggName,
-        tier: event.tier,
-        location: event.location,
-        spawned: event.spawned,
-        timestamp: event.timestamp
-      },
-      connectedClients: delivered
-    });
-  } catch (error) {
-    console.error('Webhook processing failed:', error.message);
-    return res.status(500).json({
-      error: 'Could not process spawn event.'
-    });
-  }
-});
-
 // ==================== HEALTH ====================
 app.get('/health', (req, res) => {
+  pruneEvents();
+
   res.json({
     status: 'ok',
     message: 'Backend is running',
@@ -733,72 +747,50 @@ app.get('/health/database', async (req, res) => {
 // ==================== MASTER ADMIN PAGE ====================
 app.get('/master', (req, res) => {
   res.send(`<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Master Admin - Add User</title>
 <style>
 body{font-family:sans-serif;background:#111;color:#fff;padding:30px;text-align:center}
 input,button{padding:10px;margin:5px;border-radius:5px;border:none}
-input{width:min(250px,80%)}
-button{background:#0f0;color:#000;font-weight:bold;cursor:pointer}
-</style>
-</head>
-<body>
+input{width:min(250px,80%)}button{background:#0f0;color:#000;font-weight:bold;cursor:pointer}
+</style></head><body>
 <h2>Master Admin: Add New Buyer</h2>
 <form id="addForm">
 <input type="password" id="masterpass" placeholder="Master Password" required><br>
 <input type="email" id="email" placeholder="Buyer Email" required><br>
 <input type="password" id="password" placeholder="Buyer Password" minlength="8" required><br>
 <button type="submit">Add User</button>
-</form>
-<p id="msg" role="status"></p>
+</form><p id="msg" role="status"></p>
 <script>
 document.getElementById('addForm').addEventListener('submit',async e=>{
- e.preventDefault();
- const msg=document.getElementById('msg');
- msg.textContent='Please wait...';
- try{
-  const response=await fetch('/api/master/add-user',{
-   method:'POST',
-   headers:{
-    'Content-Type':'application/json',
-    'masterpassword':document.getElementById('masterpass').value
-   },
-   body:JSON.stringify({
-    email:document.getElementById('email').value,
-    password:document.getElementById('password').value
-   })
-  });
-  const data=await response.json();
-  msg.textContent=response.ok?'User added successfully.':(data.error||'Could not add user.');
- }catch(_){
-  msg.textContent='Network error. Please try again.';
- }
+e.preventDefault();
+const msg=document.getElementById('msg');msg.textContent='Please wait...';
+try{
+const response=await fetch('/api/master/add-user',{method:'POST',headers:{
+'Content-Type':'application/json',
+'masterpassword':document.getElementById('masterpass').value
+},body:JSON.stringify({
+email:document.getElementById('email').value,
+password:document.getElementById('password').value
+})});
+const data=await response.json();
+msg.textContent=response.ok?'User added successfully.':(data.error||'Could not add user.');
+}catch(_){msg.textContent='Network error. Please try again.';}
 });
-</script>
-</body>
-</html>`);
+</script></body></html>`);
 });
 
-// ==================== BUYER KEY GENERATOR PAGE ====================
+// ==================== BUYER LOGIN / KEY GENERATOR ====================
 app.get('/generator', (req, res) => {
   res.send(`<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Buyer Login - API Key Generator</title>
 <style>
 body{font-family:sans-serif;background:#111;color:#fff;padding:30px;text-align:center}
 input,button{padding:10px;margin:5px;border-radius:5px;border:none}
-input{width:min(250px,80%)}
-button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer}
+input{width:min(250px,80%)}button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer}
 .key-box{background:#222;padding:15px;border:1px solid #0f0;font-size:18px;margin-top:15px;word-break:break-all;display:none}
-</style>
-</head>
-<body>
+</style></head><body>
 <h2>Buyer Login &amp; Generate Key</h2>
 <form id="loginForm">
 <input type="email" id="email" placeholder="Email" required><br>
@@ -813,68 +805,50 @@ button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer}
 <script>
 let userToken='';
 document.getElementById('loginForm').addEventListener('submit',async e=>{
- e.preventDefault();
- const msg=document.getElementById('msg');
- msg.textContent='Logging in...';
- try{
-  const response=await fetch('/api/buyer/login',{
-   method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({
-    email:document.getElementById('email').value,
-    password:document.getElementById('password').value
-   })
-  });
-  const data=await response.json();
-  if(!response.ok||!data.success){
-   msg.textContent=data.error||'Login failed.';
-   return;
-  }
-  userToken=data.token;
-  document.getElementById('loginForm').style.display='none';
-  document.getElementById('genBox').style.display='block';
-  msg.textContent='Login successful.';
- }catch(_){
-  msg.textContent='Network error. Please try again.';
- }
+e.preventDefault();const msg=document.getElementById('msg');msg.textContent='Logging in...';
+try{
+const response=await fetch('/api/buyer/login',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('password').value})});
+const data=await response.json();
+if(!response.ok||!data.success){msg.textContent=data.error||'Login failed.';return;}
+userToken=data.token;document.getElementById('loginForm').style.display='none';
+document.getElementById('genBox').style.display='block';msg.textContent='Login successful.';
+}catch(_){msg.textContent='Network error. Please try again.';}
 });
 document.getElementById('generateButton').addEventListener('click',async()=>{
- const msg=document.getElementById('msg');
- msg.textContent='Generating key...';
- try{
-  const response=await fetch('/api/buyer/generate-key',{
-   method:'POST',
-   headers:{'Authorization':'Bearer '+userToken}
-  });
-  const data=await response.json();
-  if(!response.ok||!data.success){
-   msg.textContent=data.error||'Could not generate key.';
-   return;
-  }
-  const box=document.getElementById('keyBox');
-  box.style.display='block';
-  box.textContent=data.apiKey;
-  msg.textContent='Keep this API key private.';
- }catch(_){
-  msg.textContent='Network error. Please try again.';
- }
+const msg=document.getElementById('msg');msg.textContent='Generating key...';
+try{
+const response=await fetch('/api/buyer/generate-key',{method:'POST',
+headers:{'Authorization':'Bearer '+userToken}});
+const data=await response.json();
+if(!response.ok||!data.success){msg.textContent=data.error||'Could not generate key.';return;}
+const box=document.getElementById('keyBox');box.style.display='block';box.textContent=data.apiKey;
+msg.textContent='Keep this API key private.';
+}catch(_){msg.textContent='Network error. Please try again.';}
 });
-</script>
-</body>
-</html>`);
+</script></body></html>`);
 });
 
 // ==================== START SERVER ====================
 async function startServer() {
   try {
+    if (JWT_SECRET.length < 32) {
+      console.warn('[SECURITY WARNING] JWT_SECRET should contain at least 32 characters.');
+    }
+
+    if (!WEBHOOK_SECRET) {
+      console.warn('[SECURITY WARNING] Configure WEBHOOK_SECRET before production use.');
+    }
+
     await initDB();
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend listening on port ${PORT}`);
-      console.log('Health endpoint: /health');
+      console.log('Health: /health');
       console.log('Database health: /health/database');
-      console.log('Schedule endpoint: /api/schedule?apiKey=YOUR_KEY');
-      console.log('SSE endpoint: /events?apiKey=YOUR_KEY');
+      console.log('Schedule API: /api/schedule');
+      console.log('SSE endpoint: /events');
+      console.log('Webhook endpoint: /api/bot-webhook');
     });
   } catch (error) {
     console.error('Startup failed:', error.message);
@@ -883,4 +857,3 @@ async function startServer() {
 }
 
 startServer();
-```
