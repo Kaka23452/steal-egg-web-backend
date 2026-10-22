@@ -21,7 +21,7 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const MAX_EVENTS = 500;
 const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1000;
 
-let pool;
+let pool = null;
 let dbReady = false;
 
 const sseClients = new Map();
@@ -38,7 +38,6 @@ app.use(express.json({ limit: '100kb' }));
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cache-Control', 'no-store');
   next();
 });
 
@@ -64,13 +63,13 @@ function clean(value) {
     .trim();
 }
 
+// IMPORTANT: no backtick regex here, so the previous syntax error is avoided.
 function normalizeName(value) {
   return clean(value)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
     .replace(/^[*_~\s]+|[*_~\s]+$/g, '')
     .trim();
 }
@@ -81,7 +80,8 @@ function parseLabel(text, labels) {
   );
 
   const regex = new RegExp(
-    `(?:^|\\n)\\s*(?:${escaped.join('|')})\\s*[:：\\-–—]\\s*([^\\n]+)`,
+    '(?:^|\\n)\\s*(?:' + escaped.join('|') +
+    ')\\s*[:：\\-–—]\\s*([^\\n]+)',
     'im'
   );
 
@@ -89,6 +89,7 @@ function parseLabel(text, labels) {
   return match ? normalizeName(match[1]) : '';
 }
 
+// ==================== TIER PARSING ====================
 const KNOWN_TIERS = [
   'Common',
   'Uncommon',
@@ -104,21 +105,27 @@ const KNOWN_TIERS = [
 ];
 
 function canonicalTier(value) {
-  const found = KNOWN_TIERS.find(
+  return KNOWN_TIERS.find(
     tier => tier.toLowerCase() === String(value || '').toLowerCase()
-  );
-  return found || 'Unknown';
+  ) || 'Unknown';
 }
 
 function parseTier(text, suppliedTier) {
   const explicit = canonicalTier(suppliedTier);
   if (explicit !== 'Unknown') return explicit;
 
-  const labeled = parseLabel(text, ['Tier', 'Rarity', 'Egg Tier']);
+  const labeled = parseLabel(text, [
+    'Tier',
+    'Rarity',
+    'Egg Tier',
+    'Spawn Tier'
+  ]);
+
   if (labeled) {
     const match = labeled.match(
       /\b(Common|Uncommon|Rare|Epic|Legendary|Mythic|Secret|Divine|Eternal|Cosmic|Transcendent)\b/i
     );
+
     if (match) return canonicalTier(match[1]);
   }
 
@@ -129,12 +136,17 @@ function parseTier(text, suppliedTier) {
   return alert ? canonicalTier(alert[1]) : 'Unknown';
 }
 
+// ==================== TIME PARSING ====================
 function parseSpawnedSeconds(value) {
-  if (Number.isFinite(Number(value)) && value !== null && value !== '') {
-    return Math.max(0, Math.floor(Number(value)));
+  if (value === null || value === undefined || value === '') {
+    return null;
   }
 
-  const text = String(value || '').toLowerCase();
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+
+  const text = String(value).toLowerCase();
   let total = 0;
   let found = false;
 
@@ -159,7 +171,6 @@ function parseTimestamp(body) {
   const value = body.time ?? body.timestamp ?? body.createdAt;
 
   if (typeof value === 'number' && Number.isFinite(value)) {
-    // Accept Unix seconds or milliseconds.
     return value < 100000000000 ? value * 1000 : value;
   }
 
@@ -168,10 +179,10 @@ function parseTimestamp(body) {
     if (Number.isFinite(parsed)) return parsed;
   }
 
-  // Discord message timestamp is the fallback.
   return Date.now();
 }
 
+// ==================== SPAWN PARSER ====================
 function parseSpawn(body) {
   const rawText = [
     body.content,
@@ -186,38 +197,53 @@ function parseSpawn(body) {
     body.spawned
   ].filter(Boolean).join('\n');
 
-  const eggCandidate = normalizeName(
-    body.eggName || body.egg ||
+  const eggName = normalizeName(
+    body.eggName ||
+    body.egg ||
     parseLabel(rawText, [
-      'Egg Name', 'Egg', 'Spawned Egg', 'Pet Name', 'Pet', 'Name'
+      'Egg Name',
+      'Egg',
+      'Spawned Egg',
+      'Pet Name',
+      'Pet',
+      'Name'
     ])
   );
 
-  const eggName = eggCandidate
-    .replace(/^[\s:*_~]+|[\s*_~]+$/g, '')
-    .trim();
+  if (
+    !eggName ||
+    /^(unknown|none|n\/a)$/i.test(eggName)
+  ) {
+    return null;
+  }
 
   const tier = parseTier(rawText, body.tier || body.rarity);
 
   const location = normalizeName(
-    body.location || body.biome ||
-    parseLabel(rawText, ['Location', 'Biome', 'Area', 'Spawn Location'])
+    body.location ||
+    body.biome ||
+    parseLabel(rawText, [
+      'Location',
+      'Biome',
+      'Area',
+      'Spawn Location'
+    ])
   ) || 'Unknown';
 
   const spawned = normalizeName(
     body.spawned ||
     parseLabel(rawText, [
-      'Spawned Ago', 'Spawned', 'Spawn Time', 'Time Since Spawn', 'Elapsed'
+      'Spawned Ago',
+      'Spawned',
+      'Spawn Time',
+      'Time Since Spawn',
+      'Elapsed'
     ])
   ) || 'Unknown';
 
   const elapsedSeconds = parseSpawnedSeconds(
     body.elapsedSeconds ?? body.spawnedSeconds ?? spawned
   );
-
-  if (!eggName || /^(unknown|none|n\/a)$/i.test(eggName)) {
-    return null;
-  }
 
   const timestampMs = parseTimestamp(body);
 
@@ -238,6 +264,7 @@ function parseSpawn(body) {
   };
 }
 
+// ==================== EVENT STORAGE ====================
 function pruneEvents() {
   const cutoff = Date.now() - MAX_EVENT_AGE_MS;
 
@@ -251,7 +278,7 @@ function pruneEvents() {
   }
 }
 
-function scheduleRecord(event) {
+function toScheduleRecord(event) {
   const elapsedSinceReceipt = Math.max(
     0,
     Math.floor((Date.now() - event.receivedAt) / 1000)
@@ -271,11 +298,7 @@ function scheduleRecord(event) {
     timestamp: event.timestamp,
     time: event.time,
     elapsedSeconds,
-
-    // Existing V290 tracker requires remainingSeconds >= 0.
-    // A past spawn is represented as zero, never as a fake future timer.
     remainingSeconds: 0,
-
     source: event.source,
     messageId: event.messageId,
     channelId: event.channelId
@@ -283,7 +306,7 @@ function scheduleRecord(event) {
 }
 
 function sendSSE(event) {
-  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  const payload = 'data: ' + JSON.stringify(event) + '\n\n';
   let delivered = 0;
 
   for (const [id, client] of sseClients) {
@@ -336,7 +359,7 @@ async function initDB() {
   console.log('Database connected and users table is ready.');
 }
 
-// ==================== 1. MASTER ADMIN ====================
+// ==================== MASTER ADMIN ====================
 app.post('/api/master/add-user', requireDatabase, async (req, res) => {
   if (!MASTER_PASSWORD) {
     return res.status(503).json({
@@ -358,7 +381,9 @@ app.post('/api/master/add-user', requireDatabase, async (req, res) => {
   const password = String(req.body.password || '');
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: 'Enter a valid email address.' });
+    return res.status(400).json({
+      error: 'Enter a valid email address.'
+    });
   }
 
   if (password.length < 8 || password.length > 200) {
@@ -375,19 +400,24 @@ app.post('/api/master/add-user', requireDatabase, async (req, res) => {
       [email, hash]
     );
 
-    return res.json({ success: true, message: 'User added successfully' });
+    return res.json({
+      success: true,
+      message: 'User added successfully'
+    });
   } catch (error) {
     console.error('Add user failed:', error.message);
 
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: 'Email already exists.' });
+      return res.status(409).json({
+        error: 'Email already exists.'
+      });
     }
 
     return res.status(500).json({ error: safeError(error) });
   }
 });
 
-// ==================== 2. BUYER LOGIN ====================
+// ==================== BUYER LOGIN ====================
 app.post('/api/buyer/login', requireDatabase, async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
@@ -411,10 +441,15 @@ app.post('/api/buyer/login', requireDatabase, async (req, res) => {
     );
 
     if (!rows.length) {
-      return res.status(401).json({ error: 'Invalid or blocked account' });
+      return res.status(401).json({
+        error: 'Invalid or blocked account'
+      });
     }
 
-    const matches = await bcrypt.compare(password, rows[0].password_hash);
+    const matches = await bcrypt.compare(
+      password,
+      rows[0].password_hash
+    );
 
     if (!matches) {
       return res.status(401).json({ error: 'Wrong password' });
@@ -433,7 +468,7 @@ app.post('/api/buyer/login', requireDatabase, async (req, res) => {
   }
 });
 
-// ==================== 3. GENERATE API KEY ====================
+// ==================== GENERATE API KEY ====================
 app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
 
@@ -449,6 +484,7 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+
     const newApiKey =
       'EGG-' + crypto.randomBytes(24).toString('hex').toUpperCase();
 
@@ -469,7 +505,9 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
       error.name === 'JsonWebTokenError' ||
       error.name === 'TokenExpiredError'
     ) {
-      return res.status(401).json({ error: 'Invalid or expired token.' });
+      return res.status(401).json({
+        error: 'Invalid or expired token.'
+      });
     }
 
     console.error('API key generation failed:', error.message);
@@ -477,8 +515,8 @@ app.post('/api/buyer/generate-key', requireDatabase, async (req, res) => {
   }
 });
 
-// ==================== API KEY AUTH HELPER ====================
-async function findActiveApiKey(apiKey) {
+// ==================== API KEY VALIDATION ====================
+async function isValidApiKey(apiKey) {
   if (!apiKey || !pool || !dbReady) return false;
 
   const [rows] = await pool.query(
@@ -489,23 +527,24 @@ async function findActiveApiKey(apiKey) {
   return rows.length > 0;
 }
 
-// ==================== 4. V290 SCHEDULE API ====================
+// ==================== V290 SCHEDULE API ====================
 app.get('/api/schedule', requireDatabase, async (req, res) => {
   try {
     const apiKey = String(
       req.query.apiKey || req.get('x-api-key') || ''
     );
 
-    // API key is required for this endpoint.
-    if (!apiKey || !(await findActiveApiKey(apiKey))) {
-      return res.status(401).json({ error: 'Missing or invalid API key.' });
+    if (!apiKey || !(await isValidApiKey(apiKey))) {
+      return res.status(401).json({
+        error: 'Missing or invalid API key.'
+      });
     }
 
     pruneEvents();
 
     const schedules = [...spawnEvents.values()]
       .sort((a, b) => b.time - a.time)
-      .map(scheduleRecord);
+      .map(toScheduleRecord);
 
     const latest = schedules[0] || null;
 
@@ -523,11 +562,13 @@ app.get('/api/schedule', requireDatabase, async (req, res) => {
     });
   } catch (error) {
     console.error('Schedule API failed:', error.message);
-    return res.status(500).json({ error: 'Could not load schedules.' });
+    return res.status(500).json({
+      error: 'Could not load schedules.'
+    });
   }
 });
 
-// ==================== 5. SSE STREAM FOR OBS ====================
+// ==================== SSE STREAM ====================
 app.get('/events', requireDatabase, async (req, res) => {
   const apiKey = String(req.query.apiKey || '');
 
@@ -536,7 +577,7 @@ app.get('/events', requireDatabase, async (req, res) => {
   }
 
   try {
-    if (!(await findActiveApiKey(apiKey))) {
+    if (!(await isValidApiKey(apiKey))) {
       return res.status(401).send('Invalid API Key');
     }
 
@@ -559,9 +600,8 @@ app.get('/events', requireDatabase, async (req, res) => {
 
     sseClients.set(clientId, { res, heartbeat });
 
-    // Send recent events to a newly connected client.
     for (const event of spawnEvents.values()) {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      res.write('data: ' + JSON.stringify(event) + '\n\n');
     }
 
     req.on('close', () => {
@@ -580,7 +620,7 @@ app.get('/events', requireDatabase, async (req, res) => {
   }
 });
 
-// ==================== 6. WISPB YTE BOT WEBHOOK ====================
+// ==================== WISPB YTE WEBHOOK ====================
 app.post('/api/bot-webhook', (req, res) => {
   if (WEBHOOK_SECRET) {
     const supplied = Buffer.from(req.get('x-webhook-secret') || '');
@@ -590,7 +630,9 @@ app.post('/api/bot-webhook', (req, res) => {
       supplied.length !== expected.length ||
       !crypto.timingSafeEqual(supplied, expected)
     ) {
-      return res.status(401).json({ error: 'Invalid webhook secret.' });
+      return res.status(401).json({
+        error: 'Invalid webhook secret.'
+      });
     }
   } else {
     console.warn(
@@ -607,7 +649,6 @@ app.post('/api/bot-webhook', (req, res) => {
       });
     }
 
-    // Prevent duplicate Discord message deliveries.
     const id = event.messageId
       ? `${event.channelId || ''}:${event.messageId}`
       : crypto.randomUUID();
@@ -643,11 +684,13 @@ app.post('/api/bot-webhook', (req, res) => {
     });
   } catch (error) {
     console.error('Webhook processing failed:', error.message);
-    return res.status(500).json({ error: 'Could not process spawn event.' });
+    return res.status(500).json({
+      error: 'Could not process spawn event.'
+    });
   }
 });
 
-// ==================== 7. HEALTH ====================
+// ==================== HEALTH ====================
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -659,7 +702,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ==================== 8. DATABASE HEALTH ====================
 app.get('/health/database', async (req, res) => {
   const started = Date.now();
 
@@ -688,50 +730,75 @@ app.get('/health/database', async (req, res) => {
   }
 });
 
-// ==================== 9. MASTER ADMIN PAGE ====================
+// ==================== MASTER ADMIN PAGE ====================
 app.get('/master', (req, res) => {
   res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Master Admin</title>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Master Admin - Add User</title>
 <style>
 body{font-family:sans-serif;background:#111;color:#fff;padding:30px;text-align:center}
 input,button{padding:10px;margin:5px;border-radius:5px;border:none}
-input{width:min(250px,80%)}button{background:#0f0;color:#000;font-weight:bold;cursor:pointer}
-</style></head><body>
+input{width:min(250px,80%)}
+button{background:#0f0;color:#000;font-weight:bold;cursor:pointer}
+</style>
+</head>
+<body>
 <h2>Master Admin: Add New Buyer</h2>
 <form id="addForm">
 <input type="password" id="masterpass" placeholder="Master Password" required><br>
 <input type="email" id="email" placeholder="Buyer Email" required><br>
 <input type="password" id="password" placeholder="Buyer Password" minlength="8" required><br>
 <button type="submit">Add User</button>
-</form><p id="msg" role="status"></p>
+</form>
+<p id="msg" role="status"></p>
 <script>
 document.getElementById('addForm').addEventListener('submit',async e=>{
  e.preventDefault();
- const msg=document.getElementById('msg');msg.textContent='Please wait...';
+ const msg=document.getElementById('msg');
+ msg.textContent='Please wait...';
  try{
-  const r=await fetch('/api/master/add-user',{method:'POST',
-   headers:{'Content-Type':'application/json','masterpassword':document.getElementById('masterpass').value},
-   body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('password').value})});
-  const d=await r.json();msg.textContent=r.ok?'User added successfully.':(d.error||'Could not add user.');
- }catch(_){msg.textContent='Network error. Please try again.';}
+  const response=await fetch('/api/master/add-user',{
+   method:'POST',
+   headers:{
+    'Content-Type':'application/json',
+    'masterpassword':document.getElementById('masterpass').value
+   },
+   body:JSON.stringify({
+    email:document.getElementById('email').value,
+    password:document.getElementById('password').value
+   })
+  });
+  const data=await response.json();
+  msg.textContent=response.ok?'User added successfully.':(data.error||'Could not add user.');
+ }catch(_){
+  msg.textContent='Network error. Please try again.';
+ }
 });
-</script></body></html>`);
+</script>
+</body>
+</html>`);
 });
 
-// ==================== 10. BUYER KEY GENERATOR ====================
+// ==================== BUYER KEY GENERATOR PAGE ====================
 app.get('/generator', (req, res) => {
   res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Buyer Login - API Key Generator</title>
 <style>
 body{font-family:sans-serif;background:#111;color:#fff;padding:30px;text-align:center}
 input,button{padding:10px;margin:5px;border-radius:5px;border:none}
-input{width:min(250px,80%)}button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer}
+input{width:min(250px,80%)}
+button{background:#00e5ff;color:#000;font-weight:bold;cursor:pointer}
 .key-box{background:#222;padding:15px;border:1px solid #0f0;font-size:18px;margin-top:15px;word-break:break-all;display:none}
-</style></head><body>
+</style>
+</head>
+<body>
 <h2>Buyer Login &amp; Generate Key</h2>
 <form id="loginForm">
 <input type="email" id="email" placeholder="Email" required><br>
@@ -746,28 +813,55 @@ input{width:min(250px,80%)}button{background:#00e5ff;color:#000;font-weight:bold
 <script>
 let userToken='';
 document.getElementById('loginForm').addEventListener('submit',async e=>{
- e.preventDefault();const msg=document.getElementById('msg');msg.textContent='Logging in...';
+ e.preventDefault();
+ const msg=document.getElementById('msg');
+ msg.textContent='Logging in...';
  try{
-  const r=await fetch('/api/buyer/login',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('password').value})});
-  const d=await r.json();
-  if(!r.ok||!d.success){msg.textContent=d.error||'Login failed.';return;}
-  userToken=d.token;document.getElementById('loginForm').style.display='none';
-  document.getElementById('genBox').style.display='block';msg.textContent='Login successful.';
- }catch(_){msg.textContent='Network error. Please try again.';}
+  const response=await fetch('/api/buyer/login',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    email:document.getElementById('email').value,
+    password:document.getElementById('password').value
+   })
+  });
+  const data=await response.json();
+  if(!response.ok||!data.success){
+   msg.textContent=data.error||'Login failed.';
+   return;
+  }
+  userToken=data.token;
+  document.getElementById('loginForm').style.display='none';
+  document.getElementById('genBox').style.display='block';
+  msg.textContent='Login successful.';
+ }catch(_){
+  msg.textContent='Network error. Please try again.';
+ }
 });
 document.getElementById('generateButton').addEventListener('click',async()=>{
- const msg=document.getElementById('msg');msg.textContent='Generating key...';
+ const msg=document.getElementById('msg');
+ msg.textContent='Generating key...';
  try{
-  const r=await fetch('/api/buyer/generate-key',{method:'POST',
-   headers:{'Authorization':'Bearer '+userToken}});
-  const d=await r.json();
-  if(!r.ok||!d.success){msg.textContent=d.error||'Could not generate key.';return;}
-  const box=document.getElementById('keyBox');box.style.display='block';box.textContent=d.apiKey;
+  const response=await fetch('/api/buyer/generate-key',{
+   method:'POST',
+   headers:{'Authorization':'Bearer '+userToken}
+  });
+  const data=await response.json();
+  if(!response.ok||!data.success){
+   msg.textContent=data.error||'Could not generate key.';
+   return;
+  }
+  const box=document.getElementById('keyBox');
+  box.style.display='block';
+  box.textContent=data.apiKey;
   msg.textContent='Keep this API key private.';
- }catch(_){msg.textContent='Network error. Please try again.';}
+ }catch(_){
+  msg.textContent='Network error. Please try again.';
+ }
 });
-</script></body></html>`);
+</script>
+</body>
+</html>`);
 });
 
 // ==================== START SERVER ====================
@@ -777,9 +871,9 @@ async function startServer() {
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend listening on port ${PORT}`);
-      console.log('Health: /health');
+      console.log('Health endpoint: /health');
       console.log('Database health: /health/database');
-      console.log('Schedule API: /api/schedule?apiKey=YOUR_KEY');
+      console.log('Schedule endpoint: /api/schedule?apiKey=YOUR_KEY');
       console.log('SSE endpoint: /events?apiKey=YOUR_KEY');
     });
   } catch (error) {
