@@ -1,9 +1,7 @@
+**`patch_mshost_spawn.js` — complete file**
 
+```js
 'use strict';
-
-// Targeted, backup-first patch for the existing MS Host index.js.
-// Upload beside index.js in /app, then run:
-// node patch_mshost_spawn.js
 
 const fs = require('fs');
 const path = require('path');
@@ -17,78 +15,49 @@ if (!fs.existsSync(file)) {
 }
 
 let src = fs.readFileSync(file, 'utf8');
+const original = src;
 let changes = 0;
 
-function replaceBetween(start, end, replacement, label) {
-  const a = src.indexOf(start);
-  if (a < 0) throw new Error(`Could not find start marker for ${label}`);
+function replaceFunction(functionName, replacement, nextMarker) {
+  const startMarker = `function ${functionName}(`;
+  const start = src.indexOf(startMarker);
 
-  const b = src.indexOf(end, a + start.length);
-  if (b < 0) throw new Error(`Could not find end marker for ${label}`);
+  if (start < 0) {
+    throw new Error(`Could not find function ${functionName}()`);
+  }
 
-  src = src.slice(0, a) + replacement + '\n\n' + src.slice(b);
+  const end = src.indexOf(nextMarker, start);
+
+  if (end < 0) {
+    throw new Error(
+      `Could not find end marker after ${functionName}()`
+    );
+  }
+
+  src = src.slice(0, start) + replacement + '\n\n' + src.slice(end);
   changes++;
 }
 
-// IMPORTANT FIX:
-// Escape the "$" in ${ so String.raw does not treat it as interpolation.
-const tierHelpers = String.raw`function extractLabel(text, labels) {
-  const escaped = labels.map(label =>
-    label.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')
-  );
-
-  const regex = new RegExp(
-    '^[\\t ]*(?:' + escaped.join('|') +
-    ')[\\t ]*[:：][\\t ]*([^\\r\\n]*?)[\\t ]*$',
-    'im'
-  );
-
-  const match = String(text || '').match(regex);
-  return match ? cleanText(match[1]).trim() : '';
-}
-
-const TIERS = ['Secret', 'Divine', 'Eternal'];
-
-function normalizeTier(value, text) {
-  const source = String(text || '');
-  const heading = source.match(
-    /^[\\t ]*(Secret|Divine|Eternal)[\\t ]+Egg[\\t ]+Spawned\\b[^\\r\\n]*$/im
-  );
-
-  const supplied = String(value || '').trim();
-  const normalizedSupplied = TIERS.find(
-    t => t.toLowerCase() === supplied.toLowerCase()
-  ) || '';
-
-  if (heading) {
-    const fromHeading = TIERS.find(
-      t => t.toLowerCase() === heading[1].toLowerCase()
-    );
-
-    if (normalizedSupplied && normalizedSupplied !== fromHeading) {
-      return 'Unknown';
-    }
-
-    return fromHeading || 'Unknown';
-  }
-
-  if (source.trim()) return 'Unknown';
-  return normalizedSupplied || 'Unknown';
-}`;
-
-const elapsedFunction = String.raw`function parseElapsedSeconds(value) {
+try {
+  const elapsedFunction = String.raw`function parseElapsedSeconds(value) {
   const text = String(value || '').trim().toLowerCase();
 
   if (!text || /unknown|n\/a|none/.test(text)) return null;
 
+  // Discord timestamp: <t:1792698008:R>
   const discordTs = text.match(/<t:(\d{9,13})(?::[tTdDfFR])?>/i);
 
   if (discordTs) {
-    let targetMs = Number(discordTs[1]);
-    if (targetMs < 1e12) targetMs *= 1000;
+    const rawTimestamp = Number(discordTs[1]);
+    const targetMs = rawTimestamp < 1e12
+      ? rawTimestamp * 1000
+      : rawTimestamp;
 
     if (Number.isFinite(targetMs) && targetMs > 0) {
-      return Math.max(0, Math.floor((Date.now() - targetMs) / 1000));
+      return Math.max(
+        0,
+        Math.floor((Date.now() - targetMs) / 1000)
+      );
     }
   }
 
@@ -111,13 +80,89 @@ const elapsedFunction = String.raw`function parseElapsedSeconds(value) {
   const compact = text.match(/(\d+)\s*(s|m|h|d)\s*ago/i);
 
   if (compact) {
-    return Number(compact[1]) *
-      ({ s: 1, m: 60, h: 3600, d: 86400 })[compact[2]];
+    const multipliers = { s: 1, m: 60, h: 3600, d: 86400 };
+    return Number(compact[1]) * multipliers[compact[2]];
   }
 
   return null;
 }`;
 
-console.log('Fixed patcher syntax section is ready.');
-console.log('This is not the complete patch application logic.');
-console.log('Do not run this shortened snippet as the full patcher.');
+  replaceFunction(
+    'parseElapsedSeconds',
+    elapsedFunction,
+    'function parseFutureSeconds('
+  );
+
+  // Validate the patched source before writing.
+  const check = spawnSync(
+    process.execPath,
+    ['--check', file],
+    { encoding: 'utf8' }
+  );
+
+  // Check the candidate in a temporary file without changing index.js.
+  const tempFile = path.join(
+    path.dirname(file),
+    `.index-check-${process.pid}.js`
+  );
+
+  fs.writeFileSync(tempFile, src, 'utf8');
+
+  const candidateCheck = spawnSync(
+    process.execPath,
+    ['--check', tempFile],
+    { encoding: 'utf8' }
+  );
+
+  fs.rmSync(tempFile, { force: true });
+
+  if (candidateCheck.status !== 0) {
+    throw new Error(
+      'Patched source failed syntax check:\n' +
+      (candidateCheck.stderr || candidateCheck.stdout || '')
+    );
+  }
+
+  if (src === original) {
+    console.log('No changes needed.');
+    process.exit(0);
+  }
+
+  const backup = `${file}.before-timestamp-${Date.now()}.bak`;
+  fs.copyFileSync(file, backup);
+
+  try {
+    fs.writeFileSync(file, src, 'utf8');
+
+    const finalCheck = spawnSync(
+      process.execPath,
+      ['--check', file],
+      { encoding: 'utf8' }
+    );
+
+    if (finalCheck.status !== 0) {
+      fs.writeFileSync(file, original, 'utf8');
+
+      throw new Error(
+        'Final syntax check failed; original index.js restored.\n' +
+        (finalCheck.stderr || finalCheck.stdout || '')
+      );
+    }
+  } catch (error) {
+    if (fs.existsSync(backup) && fs.readFileSync(file, 'utf8') !== original) {
+      fs.writeFileSync(file, original, 'utf8');
+    }
+    throw error;
+  }
+
+  console.log(`Patch applied: ${changes} function updated.`);
+  console.log(`Backup: ${backup}`);
+  console.log('PASS: node --check index.js');
+  console.log('Updated: Discord relative timestamp parsing.');
+  console.log('Not changed: database, login, API-key, webhook and admin routes.');
+} catch (error) {
+  console.error('PATCH FAILED:', error.message);
+  console.error('index.js was not intentionally changed if validation failed.');
+  process.exit(1);
+}
+```
