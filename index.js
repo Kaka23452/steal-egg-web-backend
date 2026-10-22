@@ -277,7 +277,11 @@ function normalizeSpawn(body) {
   const eventTimestamp = Date.now();
   const elapsedSeconds = parseElapsedSeconds(spawned);
   const futureSeconds = parseFutureSeconds(spawned);
-
+console.log('[TIMER DEBUG]', JSON.stringify({
+  spawned,
+  elapsedSeconds,
+  futureSeconds
+}));
   // Use a valid supplied timestamp only as event metadata.
   let messageTimestamp = eventTimestamp;
   const suppliedTime = body.timestamp ?? body.time;
