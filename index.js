@@ -43,7 +43,7 @@ app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 function safeEqual(a, b) {
   const aa = Buffer.from(String(a || ''), 'utf8');
   const bb = Buffer.from(String(b || ''), 'utf8');
-  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+  return aa.length > 0 && aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
 }
 
 function text(value) {
@@ -69,6 +69,15 @@ function cleanText(value) {
     .trim();
 }
 
+// Treat literal placeholders as missing values so they do not block fallback parsing.
+function usableText(value) {
+  const result = cleanText(value);
+  if (!result || /^(unknown|none|n\/a|na|null|undefined)$/i.test(result)) {
+    return '';
+  }
+  return result;
+}
+
 function labelValue(raw, labels) {
   const s = cleanText(raw).replace(/\r/g, '\n');
 
@@ -91,26 +100,41 @@ function labelValue(raw, labels) {
 
 function inferTier(raw, explicit) {
   const known = [
-    'SECRET', 'DIVINE', 'ETERNAL', 'COSMIC', 'MYTHIC',
+    'SECRET', 'DIVINE', 'ETERNAL', 'COSMIC', 'TRANSCENDENT', 'MYTHIC',
     'LEGENDARY', 'EPIC', 'RARE', 'UNCOMMON', 'COMMON'
   ];
-  const source = (text(explicit) + ' ' + cleanText(raw)).toUpperCase();
+  const explicitText = usableText(explicit);
 
+  if (explicitText) {
+    const match = known.find(tier => tier.toLowerCase() === explicitText.toLowerCase());
+    if (match) return match[0] + match.slice(1).toLowerCase();
+  }
+
+  const source = (text(explicit) + '\n' + cleanText(raw)).toUpperCase();
   for (const tier of known) {
     if (new RegExp('\\b' + tier + '\\b').test(source)) {
       return tier[0] + tier.slice(1).toLowerCase();
     }
   }
-  return text(explicit) || 'Unknown';
+  return explicitText || 'Unknown';
 }
 
 function parseSpawn(body) {
-  const embedFields = Array.isArray(body.embeds)
-    ? body.embeds.flatMap(e => [
-        text(e.title),
-        text(e.description),
-        ...(Array.isArray(e.fields)
-          ? e.fields.flatMap(f => [text(f.name), text(f.value)])
+  // Accept Discord embeds directly and the raw text sent by the Wispbyte bot.
+  const embedParts = Array.isArray(body.embeds)
+    ? body.embeds.flatMap(embed => [
+        text(embed && embed.title),
+        text(embed && embed.description),
+        text(embed && embed.author && embed.author.name),
+        text(embed && embed.footer && embed.footer.text),
+        ...(Array.isArray(embed && embed.fields)
+          ? embed.fields.flatMap(field => [
+              text(field && field.name),
+              text(field && field.value),
+              field && field.name && field.value
+                ? `${text(field.name)}: ${text(field.value)}`
+                : ''
+            ])
           : [])
       ])
     : [];
@@ -121,56 +145,56 @@ function parseSpawn(body) {
     text(body.description),
     text(body.eggName),
     text(body.egg),
+    text(body.petName),
     text(body.title),
     text(body.rawText),
+    text(body.rawMessage),
     text(body.embedText),
     text(body.messageContent),
-    ...embedFields
+    ...embedParts
   ].filter(Boolean);
 
   const raw = cleanText(rawParts.join('\n'));
-  const providedEgg = cleanText(
-    body.eggName || body.egg || body.petName || ''
-  );
+  const suppliedEgg = usableText(body.eggName) ||
+    usableText(body.egg) ||
+    usableText(body.petName);
 
   let eggName = labelValue(raw, [
-    'Egg Name', 'Egg', 'Pet Name', 'Pet', 'Spawn'
+    'Egg Name', 'Spawned Egg', 'Egg', 'Pet Name', 'Pet'
   ]);
+  if (!usableText(eggName)) eggName = suppliedEgg;
 
-  if (!eggName && providedEgg) eggName = providedEgg;
-
-  if (!eggName && raw) {
+  if (!usableText(eggName) && raw) {
     eggName = raw
       .replace(/^.*?\b(?:egg|pet)\s+(?:has\s+)?spawned\b\s*[:!—-]*/i, '')
-      .replace(/^\s*(?:secret|divine|eternal|cosmic|mythic|legendary|epic|rare|uncommon|common)\s+(?:egg\s+)?spawn(?:ed)?\s*[:!—-]*/i, '')
+      .replace(/^\s*(?:secret|divine|eternal|cosmic|transcendent|mythic|legendary|epic|rare|uncommon|common)\s+(?:egg\s+)?spawn(?:ed)?\s*[:!—-]*/i, '')
       .split(/\b(?:Location|Biome|Spawned|Time|Money|Tier|Rarity)\s*[:：-]/i)[0]
       .replace(/^\s*Egg\s*[:：-]\s*/i, '')
       .replace(/[|•]+\s*$/g, '')
       .trim();
   }
 
-  const location = cleanText(
-    body.location ||
-    body.biome ||
-    body.area ||
-    labelValue(raw, [
-      'Location', 'Biome', 'Map', 'Area', 'Spawn Location'
-    ]) ||
-    ''
-  );
+  // Unknown/blank supplied values must not suppress extraction from raw alert text.
+  const location =
+    usableText(body.location) ||
+    usableText(body.biome) ||
+    usableText(body.area) ||
+    usableText(labelValue(raw, [
+      'Location', 'Biome', 'Map', 'Area', 'Spawn Location', 'Spawned In',
+      'Current Location', 'Current Biome', 'Biome Name', 'Location Name', 'Region'
+    ])) ||
+    'Unknown';
 
-  const spawned = cleanText(
-    body.spawned ||
-    body.spawnedAgo ||
-    body.spawnedLabel ||
-    body.spawnTime ||
-    body.spawn_time_text ||
-    labelValue(raw, [
-      'Spawned At', 'Spawned', 'Spawned Ago',
-      'Time Since Spawn', 'Spawn Time', 'Time'
-    ]) ||
-    ''
-  );
+  const spawned =
+    usableText(body.spawned) ||
+    usableText(body.spawnedAgo) ||
+    usableText(body.spawnedLabel) ||
+    usableText(body.spawnTime) ||
+    usableText(body.spawn_time_text) ||
+    usableText(labelValue(raw, [
+      'Spawned At', 'Spawned', 'Spawned Ago', 'Time Since Spawn', 'Spawn Time', 'Time'
+    ])) ||
+    'Unknown';
 
   const tier = inferTier(raw, body.tier || body.rarity);
 
@@ -192,18 +216,15 @@ function parseSpawn(body) {
     body.time;
 
   let parsedTimestamp;
-
   if (discordUnix) {
     parsedTimestamp = new Date(Number(discordUnix[1]) * 1000);
   } else if (elapsedMatch) {
     const n = Number(elapsedMatch[1]);
     const u = elapsedMatch[2].toLowerCase();
-
     const factor = /^(s|sec)/.test(u) ? 1000
       : /^(m|min)/.test(u) ? 60000
       : /^(h|hr|hour)/.test(u) ? 3600000
       : 86400000;
-
     parsedTimestamp = new Date(Date.now() - n * factor);
   } else {
     const candidate = explicitCandidate;
@@ -222,15 +243,16 @@ function parseSpawn(body) {
 
   const messageId = text(body.messageId || body.message_id || '');
   const channelId = text(body.channelId || body.channel_id || '');
+  const validEggName = usableText(eggName) || 'Unknown';
 
   return {
-    eggName: eggName || 'Unknown',
-    petName: eggName || 'Unknown',
-    egg: eggName || 'Unknown',
+    eggName: validEggName,
+    petName: validEggName,
+    egg: validEggName,
     tier,
-    location: location || 'Unknown',
-    biome: location || 'Unknown',
-    spawned: spawned || 'Unknown',
+    location,
+    biome: location,
+    spawned,
     timestamp,
     time: timestamp,
     messageId,
@@ -269,14 +291,14 @@ function publishSpawn(body) {
   lastWebhookAt = new Date().toISOString();
   lastMessage = event;
 
+  const eventTimestamp = new Date(event.timestamp).getTime();
   const packet = `data: ${JSON.stringify({
     ...event,
     type: 'SPAWN',
     id: event.messageId || crypto.randomUUID(),
-    elapsedSeconds: Math.max(
-      0,
-      Math.floor((Date.now() - new Date(event.timestamp).getTime()) / 1000)
-    )
+    elapsedSeconds: Number.isFinite(eventTimestamp)
+      ? Math.max(0, Math.floor((Date.now() - eventTimestamp) / 1000))
+      : 0
   })}\n\n`;
 
   for (const [id, client] of sseClients) {
@@ -409,33 +431,35 @@ app.get('/health/database', async (_req, res) => {
   }
 });
 
-// V290-compatible schedule API. These are past spawn events,
+// V290-compatible schedule API. These are received spawn events,
 // not invented future countdowns.
 app.get('/api/schedule', (_req, res) => {
   res.set('Cache-Control', 'no-store');
 
   res.json({
     success: true,
-    schedules: recentEvents.map(e => ({
-      type: 'SPAWN',
-      id: e.messageId || e.timestamp,
-      petName: e.eggName,
-      eggName: e.eggName,
-      tier: e.tier,
-      location: e.location,
-      biome: e.biome,
-      spawned: e.spawned,
-      spawnedAt: e.timestamp,
-      timestamp: e.timestamp,
-      time: e.timestamp,
-      remainingSeconds: 0,
-      elapsedSeconds: Math.max(
-        0,
-        Math.floor((Date.now() - new Date(e.timestamp).getTime()) / 1000)
-      ) || 0,
-      eventType: 'spawn',
-      messageId: e.messageId
-    })),
+    schedules: recentEvents.map(e => {
+      const eventMs = new Date(e.timestamp).getTime();
+      return {
+        type: 'SPAWN',
+        id: e.messageId || e.timestamp,
+        petName: e.eggName,
+        eggName: e.eggName,
+        tier: e.tier,
+        location: e.location,
+        biome: e.biome,
+        spawned: e.spawned,
+        spawnedAt: e.timestamp,
+        timestamp: e.timestamp,
+        time: e.timestamp,
+        remainingSeconds: 0,
+        elapsedSeconds: Number.isFinite(eventMs)
+          ? Math.max(0, Math.floor((Date.now() - eventMs) / 1000))
+          : 0,
+        eventType: 'spawn',
+        messageId: e.messageId
+      };
+    }),
     lastMessage,
     webhookReceived: Boolean(lastWebhookAt),
     lastWebhookAt,
@@ -445,10 +469,9 @@ app.get('/api/schedule', (_req, res) => {
 });
 
 app.post('/api/bot-webhook', (req, res) => {
-  if (
-    WEBHOOK_SECRET &&
-    !safeEqual(req.get('x-webhook-secret'), WEBHOOK_SECRET)
-  ) {
+  if (!WEBHOOK_SECRET) {
+    console.warn('[SECURITY WARNING] WEBHOOK_SECRET is not configured; webhook is unauthenticated.');
+  } else if (!safeEqual(req.get('x-webhook-secret'), WEBHOOK_SECRET)) {
     return res.status(401).json({
       success: false,
       error: 'Invalid webhook secret'
@@ -536,16 +559,14 @@ app.get('/events', async (req, res) => {
   );
 
   if (lastMessage) {
+    const eventMs = new Date(lastMessage.timestamp).getTime();
     res.write(`data: ${JSON.stringify({
       ...lastMessage,
       type: 'SPAWN',
       id: lastMessage.messageId || lastMessage.timestamp,
-      elapsedSeconds: Math.max(
-        0,
-        Math.floor(
-          (Date.now() - new Date(lastMessage.timestamp).getTime()) / 1000
-        )
-      )
+      elapsedSeconds: Number.isFinite(eventMs)
+        ? Math.max(0, Math.floor((Date.now() - eventMs) / 1000))
+        : 0
     })}\n\n`);
   }
 
@@ -573,7 +594,6 @@ app.post('/api/master/login', (req, res) => {
   }
 
   const supplied = text(req.body && req.body.password);
-
   if (!safeEqual(supplied, MASTER_PASSWORD)) {
     return res.status(401).json({
       success: false,
@@ -585,11 +605,7 @@ app.post('/api/master/login', (req, res) => {
     expiresIn: '12h'
   });
 
-  return res.json({
-    success: true,
-    token,
-    expiresIn: 43200
-  });
+  return res.json({ success: true, token, expiresIn: 43200 });
 });
 
 app.post('/api/master/add-user', requireMaster, async (req, res) => {
@@ -651,10 +667,7 @@ app.post('/api/buyer/login', async (req, res) => {
       [username]
     );
 
-    if (
-      !rows.length ||
-      !(await bcrypt.compare(password, rows[0].password_hash))
-    ) {
+    if (!rows.length || !(await bcrypt.compare(password, rows[0].password_hash))) {
       return res.status(401).json({
         success: false,
         error: 'Invalid username or password'
@@ -690,7 +703,6 @@ app.post('/api/buyer/generate-key', async (req, res) => {
   }
 
   const token = getBearer(req);
-
   if (!token || !JWT_SECRET) {
     return res.status(401).json({
       success: false,
@@ -699,7 +711,6 @@ app.post('/api/buyer/generate-key', async (req, res) => {
   }
 
   let payload;
-
   try {
     payload = jwt.verify(token, JWT_SECRET);
   } catch (_) {
@@ -742,10 +753,7 @@ app.get('/generator', (_req, res) => res.type('html').send(
 app.use((err, _req, res, _next) => {
   console.error('[request error]', err.message || err);
   if (res.headersSent) return;
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error'
-  });
+  res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 (async () => {
@@ -754,5 +762,8 @@ app.use((err, _req, res, _next) => {
     console.log(
       `Steal An Egg backend listening on port ${PORT}; database: ${dbStatus.message}`
     );
+    if (!WEBHOOK_SECRET) {
+      console.warn('[SECURITY WARNING] Set WEBHOOK_SECRET and the same value on the Wispbyte bot.');
+    }
   });
 })();
