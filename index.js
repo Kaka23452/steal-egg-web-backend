@@ -72,10 +72,39 @@ function cleanText(value) {
 // Treat literal placeholders as missing values so they do not block fallback parsing.
 function usableText(value) {
   const result = cleanText(value);
-  if (!result || /^(unknown|none|n\/a|na|null|undefined)$/i.test(result)) {
+  if (!result || /^(unknown|none|n\/a|na|null|undefined|not reported|location not reported|biome not reported)$/i.test(result)) {
     return '';
   }
   return result;
+}
+
+const EVENT_PET_BIOMES = new Map([
+  ['graveyardbrute', 'Graveyard'],
+  ['ghostreaper', 'Graveyard'],
+  ['bloodbloom', 'Haunted Swamp'],
+  ['shelltidevoyager', 'Haunted Swamp'],
+  ['werewolf', 'Abandoned Manor'],
+  ['abominationkong', 'Abandoned Manor'],
+  ['voidseerpumpkin', 'Abandoned Manor']
+]);
+
+function normalizeEventLocation(value, eggName, rawText) {
+  const supplied = usableText(value);
+  const petKey = cleanText(eggName).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const petBiome = EVENT_PET_BIOMES.get(petKey) || '';
+  const key = supplied.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const zoneMap = { '1': 'Graveyard', '2': 'Haunted Swamp', '3': 'Abandoned Manor' };
+
+  if (!supplied) return petBiome || '';
+  if (key.includes('graveyard')) return 'Graveyard';
+  if (key.includes('hauntedswamp')) return 'Haunted Swamp';
+  if (key.includes('abandonedmanor')) return 'Abandoned Manor';
+
+  const zone = key.match(/^(?:halloweendimension|halloweenzone|dimensionzone|dimension|zone|area)?([123])$/) ||
+    key.match(/^(?:halloweendimension|halloweenzone|dimensionzone|dimension|zone|area)([123])$/);
+  const eventContext = /halloween|dimension|graveyard|haunted swamp|abandoned manor/i.test(rawText || '') || !!petBiome;
+  if (zone && eventContext) return zoneMap[zone[1]] || petBiome || supplied;
+  return supplied;
 }
 
 function labelValue(raw, labels) {
@@ -120,7 +149,8 @@ function inferTier(raw, explicit) {
 }
 
 function parseSpawn(body) {
-  // Accept Discord embeds directly and the raw text sent by the Wispbyte bot.
+  // Discord's embeds are also accepted directly, in addition to the raw text
+  // sent by the Wispbyte bot. Prefer explicit, usable fields, then parse text.
   const embedParts = Array.isArray(body.embeds)
     ? body.embeds.flatMap(embed => [
         text(embed && embed.title),
@@ -175,15 +205,16 @@ function parseSpawn(body) {
   }
 
   // Unknown/blank supplied values must not suppress extraction from raw alert text.
-  const location =
+  const extractedLocation =
     usableText(body.location) ||
     usableText(body.biome) ||
     usableText(body.area) ||
     usableText(labelValue(raw, [
       'Location', 'Biome', 'Map', 'Area', 'Spawn Location', 'Spawned In',
-      'Current Location', 'Current Biome', 'Biome Name', 'Location Name', 'Region'
-    ])) ||
-    'Unknown';
+      'Current Location', 'Current Biome', 'Biome Name', 'Location Name', 'Region',
+      'Zone', 'Zone Name', 'Spawn Zone', 'Dimension Zone', 'Halloween Zone'
+    ])) || '';
+  const location = normalizeEventLocation(extractedLocation, eggName, raw) || 'Unknown';
 
   const spawned =
     usableText(body.spawned) ||
@@ -449,6 +480,9 @@ app.get('/api/schedule', (_req, res) => {
         location: e.location,
         biome: e.biome,
         spawned: e.spawned,
+        rawMessage: String(e.rawMessage || '').slice(0, 4000),
+        source: e.source || 'discord',
+        channelId: e.channelId || '',
         spawnedAt: e.timestamp,
         timestamp: e.timestamp,
         time: e.timestamp,
