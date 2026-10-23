@@ -1,249 +1,155 @@
-app.get('/master', (_req, res) => res.type('html').send(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Master Admin — Steal An Egg</title>
-  <style>
-    *{box-sizing:border-box}
-    body{
-      margin:0;padding:30px 16px;min-height:100vh;
-      background:#07111d;color:#e9f7ff;
-      font:15px/1.5 system-ui,sans-serif
+'use strict';
+
+const express = require('express');
+const cors = require('cors');
+const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+
+const app = express();
+
+const PORT = Number(process.env.PORT || 8080);
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const MASTER_PASSWORD = process.env.MASTER_PASSWORD || '';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const DATABASE_URL = process.env.TIDB_DATABASE_URL || '';
+
+const MAX_EVENTS = 100;
+const sseClients = new Map();
+const recentEvents = [];
+const seenMessageIds = new Set();
+
+let lastWebhookAt = null;
+let lastMessage = null;
+let dbPool = null;
+
+let dbStatus = {
+  connected: false,
+  message: 'Database not initialized'
+};
+
+app.disable('x-powered-by');
+
+app.use(cors({
+  origin(origin, callback) {
+    if (
+      !origin ||
+      ALLOWED_ORIGIN === '*' ||
+      ALLOWED_ORIGIN.split(',').map(x => x.trim()).includes(origin)
+    ) {
+      return callback(null, true);
     }
-    main{max-width:560px;margin:auto}
-    .card{
-      margin-top:20px;padding:22px;
-      border:1px solid #25465d;border-radius:14px;
-      background:#101f30
-    }
-    h1{font-size:27px}
-    h2{font-size:19px}
-    label{display:block;margin:12px 0 6px}
-    input{
-      width:100%;padding:12px;border-radius:7px;
-      border:1px solid #31556c;background:#071522;
-      color:#fff;font:inherit
-    }
-    button{
-      margin-top:12px;padding:11px 16px;
-      border:1px solid #59dbe9;border-radius:7px;
-      background:#0b5368;color:#fff;
-      font-weight:700;cursor:pointer
-    }
-    button:disabled{opacity:.5}
-    .status{white-space:pre-wrap;overflow-wrap:anywhere}
-    .error{color:#ff9696}
-    .ok{color:#8bffb0}
-    [hidden]{display:none!important}
-  </style>
-</head>
-<body>
-<main>
-  <h1>Master Admin</h1>
-  <p>Create and manage buyer access to the API.</p>
 
-  <section class="card" id="loginCard">
-    <h2>Master Login</h2>
-    <form id="masterLoginForm">
-      <label for="masterPassword">Master password</label>
-      <input id="masterPassword" type="password"
-        autocomplete="current-password" required>
-      <button id="masterLoginButton" type="submit">
-        Sign in
-      </button>
-    </form>
-    <p id="loginStatus" class="status" aria-live="polite"></p>
-  </section>
+    return callback(new Error('Origin not allowed by CORS'));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Webhook-Secret',
+    'X-API-Key'
+  ]
+}));
 
-  <section class="card" id="workspace" hidden>
-    <h2>Create Buyer Account</h2>
-    <form id="addBuyerForm">
-      <label for="newBuyerUsername">Buyer username</label>
-      <input id="newBuyerUsername" maxlength="190"
-        autocomplete="off" required>
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-      <label for="newBuyerPassword">Temporary password</label>
-      <input id="newBuyerPassword" type="password"
-        minlength="8" autocomplete="new-password" required>
+function safeEqual(a, b) {
+  const aa = Buffer.from(String(a || ''), 'utf8');
+  const bb = Buffer.from(String(b || ''), 'utf8');
 
-      <button id="addBuyerButton" type="submit">
-        Create Buyer
-      </button>
-    </form>
+  return aa.length > 0 &&
+    aa.length === bb.length &&
+    crypto.timingSafeEqual(aa, bb);
+}
 
-    <p id="addStatus" class="status" aria-live="polite"></p>
-    <button id="masterLogout" type="button">Log out</button>
-  </section>
-</main>
+function text(value) {
+  if (value === undefined || value === null) return '';
 
-<script>
-(function(){
-  'use strict';
-
-  var token = '';
-  var loginCard = document.getElementById('loginCard');
-  var workspace = document.getElementById('workspace');
-  var loginStatus = document.getElementById('loginStatus');
-  var addStatus = document.getElementById('addStatus');
-
-  function status(el, message, kind) {
-    el.textContent = message || '';
-    el.className = 'status' + (kind ? ' ' + kind : '');
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value).trim();
   }
 
-  function showWorkspace() {
-    loginCard.hidden = true;
-    workspace.hidden = false;
+  return '';
+}
+
+function getBearer(req) {
+  const header = text(req.headers.authorization);
+
+  return header.toLowerCase().startsWith('bearer ')
+    ? header.slice(7).trim()
+    : '';
+}
+
+function requireMaster(req, res, next) {
+  const token = getBearer(req);
+
+  if (!token || !JWT_SECRET) {
+    return res.status(401).json({
+      success: false,
+      error: 'Master authentication required'
+    });
   }
-
-  function resetLogin() {
-    token = '';
-    try { sessionStorage.removeItem('masterToken'); } catch(e) {}
-    workspace.hidden = true;
-    loginCard.hidden = false;
-    document.getElementById('masterPassword').value = '';
-  }
-
-  async function request(path, method, payload, auth) {
-    var headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    };
-
-    if (auth && token) {
-      headers.Authorization = 'Bearer ' + token;
-    }
-
-    var response = await fetch(path, {
-      method: method,
-      headers: headers,
-      body: payload === undefined
-        ? undefined
-        : JSON.stringify(payload),
-      cache: 'no-store'
-    });
-
-    var data = await response.json().catch(function(){ return {}; });
-
-    if (!response.ok || data.success === false) {
-      throw new Error(
-        data.error || ('Request failed (HTTP ' + response.status + ')')
-      );
-    }
-
-    return data;
-  }
-
-  document.getElementById('masterLoginForm')
-    .addEventListener('submit', async function(event) {
-      event.preventDefault();
-
-      var button = document.getElementById('masterLoginButton');
-      button.disabled = true;
-      status(loginStatus, 'Checking master credentials…');
-
-      try {
-        var data = await request(
-          '/api/master/login',
-          'POST',
-          {
-            password: document.getElementById('masterPassword').value
-          },
-          false
-        );
-
-        if (!data.token) {
-          throw new Error('Master login did not return a session token.');
-        }
-
-        token = data.token;
-
-        try {
-          sessionStorage.setItem('masterToken', token);
-        } catch(e) {}
-
-        document.getElementById('masterPassword').value = '';
-        status(addStatus, 'Signed in. You can create a buyer account.', 'ok');
-        showWorkspace();
-      } catch(error) {
-        status(loginStatus, error.message || 'Master login failed.', 'error');
-      } finally {
-        button.disabled = false;
-      }
-    });
-
-  document.getElementById('addBuyerForm')
-    .addEventListener('submit', async function(event) {
-      event.preventDefault();
-
-      if (!token) {
-        resetLogin();
-        status(loginStatus, 'Please sign in again.', 'error');
-        return;
-      }
-
-      var username =
-        document.getElementById('newBuyerUsername').value.trim();
-      var password =
-        document.getElementById('newBuyerPassword').value;
-      var button = document.getElementById('addBuyerButton');
-
-      if (!username || password.length < 8) {
-        status(addStatus,
-          'Enter a username and a password of at least 8 characters.',
-          'error');
-        return;
-      }
-
-      button.disabled = true;
-      status(addStatus, 'Creating buyer account…');
-
-      try {
-        var data = await request(
-          '/api/master/add-user',
-          'POST',
-          { username: username, password: password },
-          true
-        );
-
-        document.getElementById('newBuyerPassword').value = '';
-
-        status(
-          addStatus,
-          'Buyer account created: ' + (data.username || username),
-          'ok'
-        );
-      } catch(error) {
-        if (/master authentication|required|invalid or expired token/i
-            .test(error.message || '')) {
-          resetLogin();
-          status(loginStatus, 'Master session expired. Sign in again.', 'error');
-        } else {
-          status(addStatus, error.message || 'Could not create buyer.', 'error');
-        }
-      } finally {
-        button.disabled = false;
-      }
-    });
-
-  document.getElementById('masterLogout')
-    .addEventListener('click', function() {
-      resetLogin();
-      status(loginStatus, 'Signed out.');
-      status(addStatus, '');
-    });
 
   try {
-    token = sessionStorage.getItem('masterToken') || '';
-  } catch(e) {
-    token = '';
+    const payload = jwt.verify(token, JWT_SECRET);
+
+    if (payload.role !== 'master') {
+      return res.status(403).json({
+        success: false,
+        error: 'Master access required'
+      });
+    }
+
+    req.auth = payload;
+    return next();
+  } catch (_) {
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid or expired token'
+    });
+  }
+}
+
+async function initDB() {
+  if (!DATABASE_URL) {
+    dbStatus = {
+      connected: false,
+      message: 'TIDB_DATABASE_URL is not configured'
+    };
+    return;
   }
 
-  if (token) {
-    showWorkspace();
+  try {
+    dbPool = mysql.createPool(
+      DATABASE_URL +
+      (DATABASE_URL.includes('?') ? '&' : '?') +
+      'connectionLimit=5&waitForConnections=true&queueLimit=0'
+    );
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(190) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        api_key VARCHAR(128) NULL UNIQUE,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    dbStatus = {
+      connected: true,
+      message: 'Database connected'
+    };
+  } catch (err) {
+    dbStatus = {
+      connected: false,
+      message: err.message || 'Database connection failed'
+    };
+
+    console.error('[database]', dbStatus.message);
+    dbPool = null;
   }
-})();
-</script>
-</body>
-</html>`));
+}
