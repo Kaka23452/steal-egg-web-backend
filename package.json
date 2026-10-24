@@ -1,13 +1,21 @@
 {
   "name": "steal-egg-saas-backend",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": { "start": "node index.js" },
+  "version": "1.0.1",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs",
+    "check": "node --check index.cjs"
+  },
   "dependencies": {
-    "express": "^4.21.1",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "mysql2": "^3.11.0",
+    "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
-    "bcryptjs": "^2.4.3"
+    "mysql2": "^3.11.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
