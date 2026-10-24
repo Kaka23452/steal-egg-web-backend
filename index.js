@@ -1,3 +1,4 @@
+
 const fs = require('fs');
 const path = require('path');
 
@@ -17,22 +18,24 @@ function loadSpawnEvents() {
   try {
     if (!fs.existsSync(SPAWN_STORE)) return;
 
-    const data = JSON.parse(
-      fs.readFileSync(SPAWN_STORE, 'utf8')
-    );
+    const raw = fs.readFileSync(SPAWN_STORE, 'utf8');
+    const data = JSON.parse(raw);
 
     if (!Array.isArray(data)) {
       throw new Error('Spawn store must contain an array');
     }
 
-    recentEvents.splice(
-      0,
-      recentEvents.length,
-      ...data.slice(0, MAX_EVENTS)
-    );
+    recentEvents.length = 0;
+    seenMessageIds.clear();
 
-    for (const event of recentEvents) {
-      if (event.messageId) {
+    for (const event of data.slice(0, MAX_EVENTS)) {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) {
+        continue;
+      }
+
+      recentEvents.push(event);
+
+      if (event.messageId != null) {
         seenMessageIds.add(String(event.messageId));
       }
     }
@@ -43,7 +46,7 @@ function loadSpawnEvents() {
       ? (
           recentEvents[0].receivedAt ||
           recentEvents[0].timestamp ||
-          new Date().toISOString()
+          null
         )
       : null;
 
@@ -64,9 +67,12 @@ function saveSpawnEvents() {
   const tempPath = SPAWN_STORE + '.tmp';
 
   try {
+    const dir = path.dirname(SPAWN_STORE);
+    fs.mkdirSync(dir, { recursive: true });
+
     fs.writeFileSync(
       tempPath,
-      JSON.stringify(recentEvents, null, 2),
+      JSON.stringify(recentEvents.slice(0, MAX_EVENTS), null, 2),
       'utf8'
     );
 
