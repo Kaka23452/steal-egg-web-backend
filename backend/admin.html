@@ -1,0 +1,738 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Steal An Egg — Admin Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --panel2: #182233;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --accent: #69a7ff;
+      --green: #42d69a;
+      --red: #ff7777;
+      --yellow: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1200px; margin: auto; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    h1 { font-size: 25px; margin: 0; }
+    h2 { font-size: 17px; margin: 0 0 14px; }
+    h3 { font-size: 14px; margin: 0 0 10px; }
+    p { color: var(--muted); }
+
+    .sub { color: var(--muted); margin: 5px 0 0; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      padding: 18px;
+    }
+
+    .wide { grid-column: 1 / -1; }
+
+    label {
+      display: block;
+      color: var(--muted);
+      margin: 10px 0 5px;
+      font-size: 12px;
+    }
+
+    input, select, textarea {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      padding: 10px 11px;
+      color: var(--text);
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    textarea { min-height: 70px; resize: vertical; }
+
+    button {
+      cursor: pointer;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 13px;
+      color: var(--text);
+      background: var(--panel2);
+      font: inherit;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button.danger {
+      color: #ffc0c0;
+      border-color: #704040;
+    }
+
+    button:disabled { opacity: .55; cursor: wait; }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 13px;
+    }
+
+    .status {
+      padding: 10px 12px;
+      margin: 12px 0;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .status.ok { border-color: #287a5b; }
+    .status.error { border-color: #884343; color: #ffc0c0; }
+    .status.warn { border-color: #80652e; color: var(--yellow); }
+
+    .muted { color: var(--muted); }
+    .hidden { display: none !important; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      padding: 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      min-width: 0;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 20px;
+      overflow-wrap: anywhere;
+    }
+
+    .stat span { color: var(--muted); font-size: 12px; }
+
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 330px;
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .row2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; }
+      .stats { grid-template-columns: 1fr; }
+      .row2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Steal An Egg — Admin</h1>
+      <p class="sub">Buyer accounts · Spawn data · Stock data · Database checks</p>
+    </div>
+    <div class="top-actions">
+      <button id="refreshBtn" type="button">Refresh Status</button>
+      <button id="logoutBtn" class="danger hidden" type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <div id="globalStatus" class="status" role="status" aria-live="polite">
+    Checking backend status…
+  </div>
+
+  <section class="panel" id="loginPanel">
+    <h2>Admin Login</h2>
+    <p>Sign in with the administrator credentials configured for this backend.</p>
+
+    <form id="loginForm">
+      <label for="adminUsername">Admin username</label>
+      <input id="adminUsername" name="username" autocomplete="username"
+             required maxlength="200">
+
+      <label for="adminPassword">Admin password</label>
+      <input id="adminPassword" name="password" type="password"
+             autocomplete="current-password" required>
+
+      <div class="actions">
+        <button class="primary" id="loginBtn" type="submit">Sign In</button>
+      </div>
+    </form>
+    <div id="loginStatus" class="status hidden" role="status"></div>
+  </section>
+
+  <main id="adminArea" class="grid hidden" style="margin-top:16px">
+    <section class="panel wide">
+      <h2>System Overview</h2>
+      <div class="stats">
+        <div class="stat">
+          <strong id="dbValue">Unknown</strong>
+          <span>Database connection</span>
+        </div>
+        <div class="stat">
+          <strong id="buyerCount">—</strong>
+          <span>Buyer records returned</span>
+        </div>
+        <div class="stat">
+          <strong id="stockCount">—</strong>
+          <span>Stock records returned</span>
+        </div>
+      </div>
+      <p class="muted">Status values reflect the last successful response from each endpoint.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Buyer Management</h2>
+      <p>Create a buyer account. The buyer can use the separate Generator page to sign in and obtain an API key.</p>
+
+      <form id="addBuyerForm">
+        <label for="buyerEmail">Buyer email</label>
+        <input id="buyerEmail" name="email" type="email"
+               autocomplete="off" required maxlength="254">
+
+        <label for="buyerPassword">Temporary buyer password</label>
+        <input id="buyerPassword" name="password" type="password"
+               autocomplete="new-password" required minlength="8">
+
+        <div class="actions">
+          <button class="primary" type="submit" id="addBuyerBtn">Add Buyer</button>
+          <button type="button" id="loadBuyersBtn">Refresh Buyers</button>
+        </div>
+      </form>
+
+      <div id="buyerStatus" class="status hidden" role="status"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Email</th><th>Status</th><th>Created</th></tr>
+          </thead>
+          <tbody id="buyersTable">
+            <tr><td colspan="3" class="muted">Sign in to load buyer accounts.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Stock & Spawn Data</h2>
+      <p>The stock and schedule endpoints require a valid buyer API key under the current FILE 4 route design.</p>
+
+      <label for="buyerApiKey">Buyer API key</label>
+      <input id="buyerApiKey" type="password" autocomplete="off"
+             placeholder="sk_live_…" spellcheck="false">
+
+      <div class="actions">
+        <button class="primary" id="loadStocksBtn" type="button">Load Stock Data</button>
+        <button id="loadScheduleBtn" type="button">Load Spawn Schedule</button>
+      </div>
+
+      <div id="dataStatus" class="status hidden" role="status"></div>
+      <h3 style="margin-top:18px">Stock Data</h3>
+      <pre id="stocksOutput">No stock data loaded.</pre>
+      <h3 style="margin-top:18px">Spawn Schedule</h3>
+      <pre id="scheduleOutput">No schedule loaded.</pre>
+    </section>
+
+    <section class="panel">
+      <h2>Egg / Pet Mapping</h2>
+      <p>Submit an egg-to-pet mapping using the FILE 4 admin route.</p>
+
+      <form id="eggMapForm">
+        <label for="mapEgg">Egg name</label>
+        <input id="mapEgg" name="eggName" required maxlength="200">
+
+        <label for="mapPet">Pet name</label>
+        <input id="mapPet" name="petName" required maxlength="200">
+
+        <label for="mapTier">Tier</label>
+        <input id="mapTier" name="tier" placeholder="Secret / Divine / Eternal"
+               maxlength="100">
+
+        <label for="mapImage">Pet image URL (optional)</label>
+        <input id="mapImage" name="petImageUrl" type="url"
+               placeholder="https://…" maxlength="2048">
+
+        <div class="actions">
+          <button class="primary" type="submit" id="saveMapBtn">Save Mapping</button>
+        </div>
+      </form>
+      <div id="mapStatus" class="status hidden" role="status"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Database & Backend Checks</h2>
+      <p>These checks do not modify or delete database records.</p>
+      <div class="actions">
+        <button id="healthBtn" type="button">Check Backend</button>
+        <button id="dbBtn" type="button">Check Database</button>
+      </div>
+      <pre id="healthOutput">No health check run yet.</pre>
+      <pre id="dbOutput">No database check run yet.</pre>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  let adminToken = "";
+  let isLoggedIn = false;
+
+  function showStatus(id, message, kind = "") {
+    const el = $(id);
+    el.textContent = message;
+    el.className = "status" + (kind ? " " + kind : "");
+    el.classList.remove("hidden");
+  }
+
+  function setBusy(buttonId, busy, busyText = "Please wait…") {
+    const button = $(buttonId);
+    if (!button) return;
+    if (busy) {
+      button.dataset.oldText = button.textContent;
+      button.textContent = busyText;
+      button.disabled = true;
+    } else {
+      button.textContent = button.dataset.oldText || button.textContent;
+      button.disabled = false;
+    }
+  }
+
+  async function request(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("Accept", "application/json");
+
+    if (options.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    if (options.admin !== false && adminToken) {
+      headers.set("Authorization", "Bearer " + adminToken);
+    }
+
+    const response = await fetch(path, {
+      ...options,
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error"
+    });
+
+    const raw = await response.text();
+    let data = null;
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = { message: raw || "The server returned an empty response." };
+    }
+
+    if (!response.ok) {
+      const message =
+        data.message || data.error || data.detail ||
+        ("Request failed with HTTP " + response.status);
+      throw new Error(message);
+    }
+
+    if (data && data.success === false) {
+      throw new Error(data.message || data.error || "The request was not successful.");
+    }
+
+    return data;
+  }
+
+  function getMessage(data, fallback) {
+    return data?.message || data?.error || fallback;
+  }
+
+  function showAdminArea(visible) {
+    isLoggedIn = visible;
+    $("adminArea").classList.toggle("hidden", !visible);
+    $("logoutBtn").classList.toggle("hidden", !visible);
+    $("loginPanel").classList.toggle("hidden", visible);
+  }
+
+  function rowsFrom(data, keys) {
+    for (const key of keys) {
+      if (Array.isArray(data?.[key])) return data[key];
+    }
+    return Array.isArray(data) ? data : [];
+  }
+
+  function addCell(row, value) {
+    const cell = document.createElement("td");
+    cell.textContent = value == null || value === "" ? "—" : String(value);
+    row.appendChild(cell);
+  }
+
+  async function loadBuyers() {
+    if (!adminToken) throw new Error("Please sign in as admin first.");
+
+    const data = await request("/api/admin/users");
+    const buyers = rowsFrom(data, ["users", "buyers", "data"]);
+    const tbody = $("buyersTable");
+    tbody.replaceChildren();
+
+    if (!buyers.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 3;
+      cell.className = "muted";
+      cell.textContent = "No buyer records were returned.";
+      row.appendChild(cell);
+      tbody.appendChild(row);
+    } else {
+      for (const buyer of buyers) {
+        const row = document.createElement("tr");
+        addCell(row, buyer.email || buyer.username || buyer.id);
+        addCell(row, buyer.is_active === false || buyer.isActive === false
+          ? "Inactive" : "Active / not specified");
+        addCell(row, buyer.created_at || buyer.createdAt);
+        tbody.appendChild(row);
+      }
+    }
+
+    $("buyerCount").textContent = String(buyers.length);
+    showStatus("buyerStatus", "Buyer list loaded.", "ok");
+  }
+
+  async function loadStocks() {
+    const key = $("buyerApiKey").value.trim();
+    if (!key) throw new Error("Enter a buyer API key to access /api/stocks.");
+
+    const data = await request("/api/stocks", {
+      admin: false,
+      headers: { "X-API-Key": key }
+    });
+
+    $("stocksOutput").textContent = JSON.stringify(data, null, 2);
+    const records = rowsFrom(data, ["stocks", "currentStocks", "items", "data"]);
+    $("stockCount").textContent = String(
+      Number.isFinite(data.count) ? data.count : records.length
+    );
+    showStatus("dataStatus", "Stock data loaded successfully.", "ok");
+  }
+
+  async function loadSchedule() {
+    const key = $("buyerApiKey").value.trim();
+    if (!key) throw new Error("Enter a buyer API key to access /api/schedule.");
+
+    const data = await request("/api/schedule", {
+      admin: false,
+      headers: { "X-API-Key": key }
+    });
+
+    $("scheduleOutput").textContent = JSON.stringify(data, null, 2);
+    showStatus("dataStatus", "Spawn schedule loaded successfully.", "ok");
+  }
+
+  async function checkHealth() {
+    const data = await request("/health", { admin: false });
+    $("healthOutput").textContent = JSON.stringify(data, null, 2);
+    showStatus("globalStatus", "Backend health endpoint responded.", "ok");
+    return data;
+  }
+
+  async function checkDatabase() {
+    const data = await request("/health/database", { admin: false });
+    $("dbOutput").textContent = JSON.stringify(data, null, 2);
+
+    const connected =
+      data.databaseConnected === true ||
+      data.connected === true ||
+      data.database?.connected === true;
+
+    $("dbValue").textContent = connected ? "Connected" : "Response received";
+    showStatus(
+      "globalStatus",
+      connected
+        ? "Database check reports a successful connection."
+        : "Database endpoint responded; inspect its result for the connection state.",
+      connected ? "ok" : "warn"
+    );
+    return data;
+  }
+
+  $("loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setBusy("loginBtn", true, "Signing in…");
+    showStatus("loginStatus", "Checking admin credentials…");
+
+    try {
+      const username = $("adminUsername").value.trim();
+      const password = $("adminPassword").value;
+
+      const data = await request("/api/admin/login", {
+        admin: false,
+        method: "POST",
+        body: JSON.stringify({ username, password })
+      });
+
+      const token = data.token || data.accessToken || data.access_token;
+      if (!token) {
+        throw new Error(
+          "Login response did not contain a token. Check FILE 4's /api/admin/login response format."
+        );
+      }
+
+      adminToken = token;
+      showAdminArea(true);
+      $("adminPassword").value = "";
+      showStatus("globalStatus", "Admin login succeeded.", "ok");
+
+      try {
+        await loadBuyers();
+      } catch (error) {
+        showStatus("buyerStatus", error.message, "error");
+      }
+
+      try {
+        await checkHealth();
+      } catch (error) {
+        $("healthOutput").textContent = error.message;
+      }
+
+      try {
+        await checkDatabase();
+      } catch (error) {
+        $("dbOutput").textContent = error.message;
+        $("dbValue").textContent = "Check failed";
+      }
+    } catch (error) {
+      adminToken = "";
+      showStatus("loginStatus", error.message, "error");
+    } finally {
+      setBusy("loginBtn", false);
+    }
+  });
+
+  $("addBuyerForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setBusy("addBuyerBtn", true, "Adding buyer…");
+
+    try {
+      const email = $("buyerEmail").value.trim();
+      const password = $("buyerPassword").value;
+
+      const data = await request("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+
+      $("buyerPassword").value = "";
+      showStatus("buyerStatus", getMessage(data, "Buyer creation request succeeded."), "ok");
+      await loadBuyers();
+    } catch (error) {
+      showStatus("buyerStatus", error.message, "error");
+    } finally {
+      setBusy("addBuyerBtn", false);
+    }
+  });
+
+  $("loadBuyersBtn").addEventListener("click", async () => {
+    try {
+      await loadBuyers();
+    } catch (error) {
+      showStatus("buyerStatus", error.message, "error");
+    }
+  });
+
+  $("loadStocksBtn").addEventListener("click", async () => {
+    setBusy("loadStocksBtn", true, "Loading…");
+    try {
+      await loadStocks();
+    } catch (error) {
+      showStatus("dataStatus", error.message, "error");
+    } finally {
+      setBusy("loadStocksBtn", false);
+    }
+  });
+
+  $("loadScheduleBtn").addEventListener("click", async () => {
+    setBusy("loadScheduleBtn", true, "Loading…");
+    try {
+      await loadSchedule();
+    } catch (error) {
+      showStatus("dataStatus", error.message, "error");
+    } finally {
+      setBusy("loadScheduleBtn", false);
+    }
+  });
+
+  $("eggMapForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setBusy("saveMapBtn", true, "Saving…");
+
+    try {
+      const body = {
+        eggName: $("mapEgg").value.trim(),
+        petName: $("mapPet").value.trim(),
+        tier: $("mapTier").value.trim(),
+        petImageUrl: $("mapImage").value.trim()
+      };
+
+      const data = await request("/api/admin/egg-map", {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+
+      showStatus("mapStatus", getMessage(data, "Mapping request succeeded."), "ok");
+    } catch (error) {
+      showStatus("mapStatus", error.message, "error");
+    } finally {
+      setBusy("saveMapBtn", false);
+    }
+  });
+
+  $("healthBtn").addEventListener("click", async () => {
+    try {
+      await checkHealth();
+    } catch (error) {
+      $("healthOutput").textContent = error.message;
+      showStatus("globalStatus", "Backend health check failed.", "error");
+    }
+  });
+
+  $("dbBtn").addEventListener("click", async () => {
+    try {
+      await checkDatabase();
+    } catch (error) {
+      $("dbOutput").textContent = error.message;
+      $("dbValue").textContent = "Check failed";
+      showStatus("globalStatus", "Database check failed.", "error");
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", async () => {
+    try {
+      await checkHealth();
+    } catch (error) {
+      showStatus("globalStatus", "Backend health check failed: " + error.message, "error");
+    }
+
+    try {
+      await checkDatabase();
+    } catch (error) {
+      $("dbOutput").textContent = error.message;
+      $("dbValue").textContent = "Check failed";
+    }
+
+    if (isLoggedIn) {
+      try {
+        await loadBuyers();
+      } catch (error) {
+        showStatus("buyerStatus", error.message, "error");
+      }
+    }
+  });
+
+  $("logoutBtn").addEventListener("click", () => {
+    adminToken = "";
+    $("adminPassword").value = "";
+    $("buyerApiKey").value = "";
+    showAdminArea(false);
+    showStatus("globalStatus", "Signed out. Public health checks remain available.");
+    showStatus("loginStatus", "You have signed out.", "ok");
+  });
+
+  // Initial public checks only. No login or database changes occur automatically.
+  (async () => {
+    try {
+      await checkHealth();
+    } catch (error) {
+      showStatus("globalStatus", "Backend health check failed: " + error.message, "error");
+    }
+
+    try {
+      await checkDatabase();
+    } catch (error) {
+      $("dbOutput").textContent = error.message;
+      $("dbValue").textContent = "Check failed";
+    }
+  })();
+})();
+</script>
+</body>
+</html>
+```
