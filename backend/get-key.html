@@ -1,0 +1,196 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Buyer Portal | Steal An Egg</title>
+<style>
+:root{color-scheme:dark;font-family:Arial,Helvetica,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:#080d18;color:#edf3ff}
+main{width:min(100%,450px);padding:28px;background:#131c2e;border:1px solid #2d3c58;border-radius:18px;box-shadow:0 20px 60px #0007}
+h1{margin:0;font-size:27px}
+.subtitle{color:#aab8d0;line-height:1.6;font-size:14px;margin:10px 0 22px}
+label{display:block;font-size:13px;margin:16px 0 7px;color:#dbe5f8}
+input{width:100%;padding:12px;border-radius:9px;border:1px solid #394966;background:#0b1220;color:#fff;font-size:15px}
+button{width:100%;margin-top:13px;padding:12px;border:0;border-radius:9px;background:#70e0b2;color:#071b16;font-weight:700;font-size:14px;cursor:pointer}
+button.secondary{background:#293751;color:#edf3ff}
+button:disabled{opacity:.55;cursor:wait}
+#status{padding:12px;border:1px solid #293751;border-radius:9px;background:#0b1220;color:#dce7f9;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5}
+#workspace,#keyPanel{display:none}
+#keyPanel{margin-top:18px;padding-top:16px;border-top:1px solid #2d3c58}
+small{color:#aab8d0;line-height:1.5}
+</style>
+</head>
+<body>
+<main>
+  <h1>Buyer Portal</h1>
+  <p class="subtitle">Sign in with your buyer account to create an API key for your OBS dashboard.</p>
+
+  <form id="loginForm">
+    <label for="email">Buyer email</label>
+    <input id="email" type="email" autocomplete="username"
+      placeholder="buyer@example.com" required>
+
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password"
+      required>
+
+    <button id="loginButton" type="submit">Sign In</button>
+  </form>
+
+  <section id="workspace">
+    <p class="subtitle">You are signed in. Generate a key to connect your OBS frontend.</p>
+    <button id="generateButton" type="button">Generate / Get API Key</button>
+    <button id="logoutButton" class="secondary" type="button">Sign Out</button>
+  </section>
+
+  <section id="keyPanel">
+    <label for="apiKey">Your buyer API key</label>
+    <input id="apiKey" readonly autocomplete="off" spellcheck="false">
+    <button id="copyButton" type="button">Copy API Key</button>
+    <p><small>Keep this key private. Paste it into the OBS dashboard's API key field. Never use your Discord bot key here.</small></p>
+  </section>
+
+  <p id="status" role="status" aria-live="polite">Ready to sign in.</p>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  let authToken = null;
+
+  // This page uses same-origin API requests; no editable backend URL.
+  async function api(path, options = {}) {
+    const headers = {
+      Accept: 'application/json',
+      ...(options.body !== undefined
+        ? {'Content-Type': 'application/json'} : {}),
+      ...(authToken
+        ? {Authorization: 'Bearer ' + authToken} : {}),
+      ...(options.headers || {})
+    };
+
+    const response = await fetch(path, {
+      ...options,
+      headers,
+      cache: 'no-store',
+      credentials: 'same-origin',
+      redirect: 'error'
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || data.success === false) {
+      throw new Error(
+        data.error || data.message || `Request failed (HTTP ${response.status})`
+      );
+    }
+    return data;
+  }
+
+  function showStatus(message) {
+    $('status').textContent = message;
+  }
+
+  function clearSession() {
+    authToken = null;
+    $('workspace').style.display = 'none';
+    $('keyPanel').style.display = 'none';
+    $('apiKey').value = '';
+    $('password').value = '';
+    $('generateButton').disabled = false;
+  }
+
+  $('loginForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    $('loginButton').disabled = true;
+    clearSession();
+    showStatus('Signing in…');
+
+    try {
+      const data = await api('/api/buyer/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: $('email').value.trim(),
+          password: $('password').value
+        })
+      });
+
+      const token = data.token || data.accessToken || data.access_token;
+      if (!token) {
+        throw new Error(
+          'Login response has no session token. Backend response format must be checked.'
+        );
+      }
+
+      authToken = token;
+      $('password').value = '';
+      $('workspace').style.display = 'block';
+      showStatus('Login successful. You can generate your API key.');
+    } catch (error) {
+      clearSession();
+      showStatus('Login failed: ' + error.message);
+    } finally {
+      $('loginButton').disabled = false;
+    }
+  });
+
+  $('generateButton').addEventListener('click', async () => {
+    if (!authToken) {
+      showStatus('Please sign in again.');
+      return;
+    }
+
+    $('generateButton').disabled = true;
+    showStatus('Requesting API key…');
+
+    try {
+      const data = await api('/api/buyer/generate-key', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+
+      const key = data.apiKey || data.api_key || data.key;
+      if (!key) {
+        throw new Error(
+          'No API key returned. Check the backend response and key-generation route.'
+        );
+      }
+
+      $('apiKey').value = key;
+      $('keyPanel').style.display = 'block';
+      showStatus('API key received. Copy it and save it securely.');
+    } catch (error) {
+      showStatus('Key generation failed: ' + error.message);
+    } finally {
+      $('generateButton').disabled = false;
+    }
+  });
+
+  $('copyButton').addEventListener('click', async () => {
+    const key = $('apiKey').value;
+    if (!key) return;
+
+    try {
+      await navigator.clipboard.writeText(key);
+      showStatus('API key copied.');
+    } catch {
+      $('apiKey').focus();
+      $('apiKey').select();
+      showStatus('Automatic copy unavailable. Copy the selected key manually.');
+    }
+  });
+
+  $('logoutButton').addEventListener('click', () => {
+    clearSession();
+    showStatus('Signed out. Sign in again when needed.');
+  });
+})();
+</script>
+</body>
+</html>
