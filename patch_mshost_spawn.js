@@ -1,155 +1,312 @@
+
 'use strict';
 
-const express = require('express');
-const cors = require('cors');
-const mysql = require('mysql2/promise');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+/**
+ * Steal An Egg SaaS — Manual Spawn Testing CLI
+ *
+ * Node.js 20+ required.
+ *
+ * Example:
+ * BOT_INGEST_KEY=your_bot_secret node patch_mshost_spawn.js \
+ *   --egg "RazorFang" \
+ *   --location "Demons" \
+ *   --tier "Secret" \
+ *   --spawned "2 minutes ago"
+ *
+ * Windows PowerShell:
+ * $env:BOT_INGEST_KEY="your_bot_secret"
+ * node .\patch_mshost_spawn.js --egg "RazorFang" --location "Demons" --tier "Secret" --spawned "2 minutes ago"
+ */
 
-const app = express();
+const crypto = require('node:crypto');
 
-const PORT = Number(process.env.PORT || 8080);
-const JWT_SECRET = process.env.JWT_SECRET || '';
-const MASTER_PASSWORD = process.env.MASTER_PASSWORD || '';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
-const DATABASE_URL = process.env.TIDB_DATABASE_URL || '';
+const DEFAULT_BACKEND_URL = 'http://127.0.0.1:3000';
+const REQUEST_TIMEOUT_MS = 15000;
 
-const MAX_EVENTS = 100;
-const sseClients = new Map();
-const recentEvents = [];
-const seenMessageIds = new Set();
+function printUsage() {
+  console.log(`
+Steal An Egg — Manual Spawn Test
 
-let lastWebhookAt = null;
-let lastMessage = null;
-let dbPool = null;
+Usage:
+  node patch_mshost_spawn.js --egg "RazorFang" --location "Demons" --tier "Secret" --spawned "2 minutes ago"
 
-let dbStatus = {
-  connected: false,
-  message: 'Database not initialized'
-};
+Required options:
+  --egg         Egg name
+  --location    Spawn location
+  --tier        Egg rarity/tier
 
-app.disable('x-powered-by');
+Optional options:
+  --spawned     Spawn time (default: now)
+  --message-id  Numeric Discord-style message ID for deduplication testing
+  --url         Backend base URL
+  --help        Display this help
 
-app.use(cors({
-  origin(origin, callback) {
-    if (
-      !origin ||
-      ALLOWED_ORIGIN === '*' ||
-      ALLOWED_ORIGIN.split(',').map(x => x.trim()).includes(origin)
-    ) {
-      return callback(null, true);
+Environment:
+  BOT_INGEST_KEY  Must match the backend BOT_INGEST_KEY
+  BACKEND_URL     Backend URL (default: http://127.0.0.1:3000)
+
+Examples:
+  node patch_mshost_spawn.js --egg "RazorFang" --location "Demons" --tier "Secret"
+
+  node patch_mshost_spawn.js --egg "Starry Fox Egg" --location "Forest" --tier "Legendary" --spawned "2 minutes ago"
+`);
+}
+
+function parseArguments(argv) {
+  const result = {};
+  const options = new Set([
+    '--egg',
+    '--location',
+    '--tier',
+    '--spawned',
+    '--message-id',
+    '--url'
+  ]);
+
+  for (let i = 0; i < argv.length; i++) {
+    const option = argv[i];
+
+    if (option === '--help' || option === '-h') {
+      result.help = true;
+      continue;
     }
 
-    return callback(new Error('Origin not allowed by CORS'));
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Webhook-Secret',
-    'X-API-Key'
-  ]
-}));
+    if (!options.has(option)) {
+      throw new Error(`Unknown option: ${option}`);
+    }
 
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+    const values = [];
 
-function safeEqual(a, b) {
-  const aa = Buffer.from(String(a || ''), 'utf8');
-  const bb = Buffer.from(String(b || ''), 'utf8');
+    i++;
 
-  return aa.length > 0 &&
-    aa.length === bb.length &&
-    crypto.timingSafeEqual(aa, bb);
-}
+    while (i < argv.length && !argv[i].startsWith('--')) {
+      values.push(argv[i]);
+      i++;
+    }
 
-function text(value) {
-  if (value === undefined || value === null) return '';
+    i--;
 
-  if (typeof value === 'string' || typeof value === 'number') {
-    return String(value).trim();
+    const value = values.join(' ').trim();
+
+    if (!value) {
+      throw new Error(`Missing value for ${option}`);
+    }
+
+    switch (option) {
+      case '--egg':
+        result.eggName = value;
+        break;
+      case '--location':
+        result.location = value;
+        break;
+      case '--tier':
+        result.tier = value;
+        break;
+      case '--spawned':
+        result.spawnedAt = value;
+        break;
+      case '--message-id':
+        result.messageId = value;
+        break;
+      case '--url':
+        result.backendUrl = value;
+        break;
+    }
   }
 
-  return '';
+  return result;
 }
 
-function getBearer(req) {
-  const header = text(req.headers.authorization);
-
-  return header.toLowerCase().startsWith('bearer ')
-    ? header.slice(7).trim()
-    : '';
-}
-
-function requireMaster(req, res, next) {
-  const token = getBearer(req);
-
-  if (!token || !JWT_SECRET) {
-    return res.status(401).json({
-      success: false,
-      error: 'Master authentication required'
-    });
+function validateText(value, name, maxLength = 191) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${name} is required`);
   }
+
+  if (value.trim().length > maxLength) {
+    throw new Error(`${name} cannot exceed ${maxLength} characters`);
+  }
+
+  return value.trim();
+}
+
+function buildMessageId(value) {
+  if (value !== undefined) {
+    const id = validateText(value, 'message-id', 32);
+
+    if (!/^\d{1,32}$/.test(id)) {
+      throw new Error('--message-id must contain 1–32 digits');
+    }
+
+    return id;
+  }
+
+  // Numeric, unique ID compatible with the backend's validation.
+  return `${Date.now()}${crypto.randomInt(100000, 999999)}`;
+}
+
+async function main() {
+  let args;
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-
-    if (payload.role !== 'master') {
-      return res.status(403).json({
-        success: false,
-        error: 'Master access required'
-      });
-    }
-
-    req.auth = payload;
-    return next();
-  } catch (_) {
-    return res.status(401).json({
-      success: false,
-      error: 'Invalid or expired token'
-    });
-  }
-}
-
-async function initDB() {
-  if (!DATABASE_URL) {
-    dbStatus = {
-      connected: false,
-      message: 'TIDB_DATABASE_URL is not configured'
-    };
+    args = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    console.error(`Argument error: ${error.message}`);
+    console.error('Run with --help to see usage.');
+    process.exitCode = 1;
     return;
   }
 
-  try {
-    dbPool = mysql.createPool(
-      DATABASE_URL +
-      (DATABASE_URL.includes('?') ? '&' : '?') +
-      'connectionLimit=5&waitForConnections=true&queueLimit=0'
-    );
-
-    await dbPool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(190) NOT NULL UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
-        api_key VARCHAR(128) NULL UNIQUE,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    dbStatus = {
-      connected: true,
-      message: 'Database connected'
-    };
-  } catch (err) {
-    dbStatus = {
-      connected: false,
-      message: err.message || 'Database connection failed'
-    };
-
-    console.error('[database]', dbStatus.message);
-    dbPool = null;
+  if (args.help) {
+    printUsage();
+    return;
   }
+
+  let botKey = process.env.BOT_INGEST_KEY;
+
+  if (!botKey || botKey.startsWith('REPLACE_WITH_')) {
+    console.error(
+      'Error: Set BOT_INGEST_KEY to the same secret used by the backend.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  let eggName;
+  let location;
+  let tier;
+
+  try {
+    eggName = validateText(args.eggName, '--egg');
+    location = validateText(args.location, '--location');
+    tier = validateText(args.tier, '--tier', 64);
+  } catch (error) {
+    console.error(`Validation error: ${error.message}`);
+    console.error('Run with --help to see usage.');
+    process.exitCode = 1;
+    return;
+  }
+
+  const spawnedAt = args.spawnedAt || new Date().toISOString();
+  const messageId = buildMessageId(args.messageId);
+
+  const baseUrl = (
+    args.backendUrl ||
+    process.env.BACKEND_URL ||
+    DEFAULT_BACKEND_URL
+  ).replace(/\/+$/, '');
+
+  let parsedUrl;
+
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    console.error('Error: The backend URL is invalid.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (
+    !['http:', 'https:'].includes(parsedUrl.protocol) ||
+    parsedUrl.username ||
+    parsedUrl.password ||
+    parsedUrl.search ||
+    parsedUrl.hash
+  ) {
+    console.error('Error: Provide a valid HTTP(S) base URL without credentials, query or fragment.');
+    process.exitCode = 1;
+    return;
+  }
+
+  const endpoint = `${baseUrl}/api/ingest`;
+
+  const payload = {
+    messageId,
+    tier,
+    eggName,
+    location,
+    spawnedAt
+  };
+
+  console.log('');
+  console.log('======================================');
+  console.log(' STEAL AN EGG — SPAWN TEST');
+  console.log('======================================');
+  console.log(`Backend:  ${baseUrl}`);
+  console.log(`Egg:      ${eggName}`);
+  console.log(`Location: ${location}`);
+  console.log(`Tier:     ${tier}`);
+  console.log(`Spawned:  ${spawnedAt}`);
+  console.log(`Message:  ${messageId}`);
+  console.log('======================================');
+  console.log('Sending test spawn...');
+
+  let response;
+
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bot-Key': botKey
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    console.error('');
+    console.error('Request failed.');
+
+    if (error.name === 'TimeoutError') {
+      console.error('The backend did not respond within 15 seconds.');
+    } else {
+      console.error(error.message);
+    }
+
+    console.error('Check that the backend is running and the URL is correct.');
+    process.exitCode = 1;
+    return;
+  } finally {
+    // Avoid accidental reuse of the secret within this script.
+    botKey = '';
+  }
+
+  let result;
+
+  try {
+    result = await response.json();
+  } catch {
+    console.error(`Backend returned HTTP ${response.status} with a non-JSON response.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!response.ok || result.ok !== true) {
+    console.error('');
+    console.error(`Spawn test failed: HTTP ${response.status}`);
+    console.error(`Reason: ${result.error || 'Unknown backend error'}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (result.duplicate) {
+    console.log('');
+    console.log('Duplicate message detected.');
+    console.log('The backend did not create another stock record.');
+    return;
+  }
+
+  console.log('');
+  console.log('Spawn ingestion successful.');
+  console.log(`Stock ID: ${result.stockId}`);
+  console.log(`Egg:      ${result.eggName}`);
+  console.log(`Pet:      ${result.petName}`);
+  console.log(`Location: ${result.location}`);
+  console.log(`Expires:  ${result.expiresAt}`);
+  console.log('');
+  console.log('Check the dashboard and OBS overlay for the new stock.');
 }
+
+main().catch(error => {
+  console.error(`Unexpected error: ${error.message}`);
+  process.exitCode = 1;
+});
