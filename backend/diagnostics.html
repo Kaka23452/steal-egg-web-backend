@@ -1,0 +1,425 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Steal An Egg — Backend Diagnostics</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --green: #42d69a;
+      --red: #ff8585;
+      --yellow: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1050px; margin: auto; }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    h1 { margin: 0; font-size: 25px; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    p { color: var(--muted); }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 15px;
+      min-width: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .stat {
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 13px;
+      min-width: 0;
+    }
+
+    .stat-label { color: var(--muted); font-size: 12px; }
+
+    .stat-value {
+      font-size: 19px;
+      font-weight: 700;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    button {
+      cursor: pointer;
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #182233;
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button:disabled { opacity: .55; cursor: wait; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      background: #0b111b;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .status.ok { border-color: #287a5b; }
+    .status.error { border-color: #884343; color: #ffc0c0; }
+    .status.warn { border-color: #80652e; color: var(--yellow); }
+
+    .muted { color: var(--muted); }
+
+    pre {
+      margin: 10px 0 0;
+      padding: 13px;
+      max-height: 420px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .small { font-size: 12px; }
+
+    @media (max-width: 700px) {
+      body { padding: 12px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Backend Diagnostics</h1>
+      <p class="muted">Read-only health checks for the existing backend.</p>
+    </div>
+    <div class="actions">
+      <button id="refreshAll" class="primary" type="button">Run Both Checks</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>Check Summary</h2>
+    <div class="grid">
+      <div class="stat">
+        <div class="stat-label">Backend health</div>
+        <div class="stat-value" id="healthSummary">Not checked</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Database status</div>
+        <div class="stat-value" id="databaseSummary">Not checked</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Last check</div>
+        <div class="stat-value" id="lastCheck">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Page mode</div>
+        <div class="stat-value">Read-only</div>
+      </div>
+    </div>
+    <div id="overallStatus" class="status" role="status" aria-live="polite">
+      Ready. Select a health check to begin.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Backend Health — GET /health</h2>
+    <p class="muted">
+      Requests the existing health endpoint. A successful HTTP response does
+      not by itself prove that every backend feature is working.
+    </p>
+    <div class="actions">
+      <button type="button" id="healthBtn">Check Backend Health</button>
+    </div>
+    <div id="healthStatus" class="status">Not checked.</div>
+    <pre id="healthOutput">No response received yet.</pre>
+  </section>
+
+  <section class="panel">
+    <h2>Database Health — GET /health/database</h2>
+    <p class="muted">
+      Requests the existing database health endpoint. The displayed database
+      state depends on the fields actually returned by the server.
+    </p>
+    <div class="actions">
+      <button type="button" id="databaseBtn">Check Database</button>
+    </div>
+    <div id="databaseStatus" class="status">Not checked.</div>
+    <pre id="databaseOutput">No response received yet.</pre>
+  </section>
+
+  <section class="panel">
+    <h2>Verification Notes</h2>
+    <ul>
+      <li>This page sends GET requests only to <code>/health</code> and <code>/health/database</code>.</li>
+      <li>It does not need a buyer API key or an admin login token for these public checks.</li>
+      <li>It does not clear, edit, or insert database records.</li>
+      <li>A failed request may indicate a network, server, route, or response-format issue.</li>
+    </ul>
+    <p class="muted small">
+      No claim of successful connectivity is made until an actual response is received.
+    </p>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(id, message, kind = "") {
+    const el = $(id);
+    el.textContent = message;
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function setBusy(id, busy, busyText) {
+    const button = $(id);
+
+    if (busy) {
+      button.dataset.originalText = button.textContent;
+      button.textContent = busyText;
+      button.disabled = true;
+    } else {
+      button.textContent = button.dataset.originalText || button.textContent;
+      button.disabled = false;
+    }
+  }
+
+  async function getJson(path) {
+    const response = await fetch(path, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error"
+    });
+
+    const raw = await response.text();
+    let data;
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(
+        "The endpoint returned non-JSON content (HTTP " + response.status + ")."
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data.message || data.error || ("HTTP " + response.status)
+      );
+    }
+
+    return data;
+  }
+
+  function markTime() {
+    $("lastCheck").textContent = new Date().toLocaleString();
+  }
+
+  function getDatabaseState(data) {
+    if (data.databaseConnected === true || data.connected === true) {
+      return "Connected";
+    }
+
+    if (data.databaseConnected === false || data.connected === false) {
+      return "Disconnected";
+    }
+
+    if (typeof data.database?.connected === "boolean") {
+      return data.database.connected ? "Connected" : "Disconnected";
+    }
+
+    return "Unspecified";
+  }
+
+  async function checkHealth() {
+    setBusy("healthBtn", true, "Checking…");
+    setStatus("healthStatus", "Requesting /health…");
+
+    try {
+      const data = await getJson("/health");
+
+      $("healthOutput").textContent = JSON.stringify(data, null, 2);
+      $("healthSummary").textContent =
+        data.status || data.ok === true ? "Responded" : "Responded";
+
+      setStatus(
+        "healthStatus",
+        "GET /health returned a successful HTTP response.",
+        "ok"
+      );
+
+      markTime();
+      return { ok: true, data };
+    } catch (error) {
+      $("healthOutput").textContent = error.message;
+      $("healthSummary").textContent = "Check failed";
+
+      setStatus("healthStatus", error.message, "error");
+      markTime();
+      return { ok: false, error: error.message };
+    } finally {
+      setBusy("healthBtn", false);
+    }
+  }
+
+  async function checkDatabase() {
+    setBusy("databaseBtn", true, "Checking…");
+    setStatus("databaseStatus", "Requesting /health/database…");
+
+    try {
+      const data = await getJson("/health/database");
+      const state = getDatabaseState(data);
+
+      $("databaseOutput").textContent = JSON.stringify(data, null, 2);
+      $("databaseSummary").textContent = state;
+
+      if (state === "Connected") {
+        setStatus(
+          "databaseStatus",
+          "Database endpoint reports a successful connection.",
+          "ok"
+        );
+      } else if (state === "Disconnected") {
+        setStatus(
+          "databaseStatus",
+          "Database endpoint reports that the database is disconnected.",
+          "error"
+        );
+      } else {
+        setStatus(
+          "databaseStatus",
+          "Endpoint responded, but its response did not confirm the database connection state.",
+          "warn"
+        );
+      }
+
+      markTime();
+      return { ok: true, connected: state === "Connected", data };
+    } catch (error) {
+      $("databaseOutput").textContent = error.message;
+      $("databaseSummary").textContent = "Check failed";
+
+      setStatus("databaseStatus", error.message, "error");
+      markTime();
+      return { ok: false, error: error.message };
+    } finally {
+      setBusy("databaseBtn", false);
+    }
+  }
+
+  async function runBoth() {
+    setBusy("refreshAll", true, "Running checks…");
+    setStatus("overallStatus", "Running both read-only checks…");
+
+    try {
+      const health = await checkHealth();
+      const database = await checkDatabase();
+
+      if (health.ok && database.ok && database.connected) {
+        setStatus(
+          "overallStatus",
+          "Both endpoints responded, and the database endpoint reports connected.",
+          "ok"
+        );
+      } else if (health.ok && database.ok) {
+        setStatus(
+          "overallStatus",
+          "Both endpoints responded, but database connectivity was not confirmed. Review the database response.",
+          "warn"
+        );
+      } else {
+        setStatus(
+          "overallStatus",
+          "One or more checks failed. Review each response below.",
+          "error"
+        );
+      }
+    } finally {
+      setBusy("refreshAll", false);
+    }
+  }
+
+  $("healthBtn").addEventListener("click", async () => {
+    const result = await checkHealth();
+    setStatus(
+      "overallStatus",
+      result.ok ? "Backend health endpoint responded." :
+        "Backend health check failed.",
+      result.ok ? "ok" : "error"
+    );
+  });
+
+  $("databaseBtn").addEventListener("click", async () => {
+    const result = await checkDatabase();
+
+    if (!result.ok) {
+      setStatus("overallStatus", "Database health check failed.", "error");
+    } else if (result.connected) {
+      setStatus("overallStatus", "Database endpoint reports connected.", "ok");
+    } else {
+      setStatus(
+        "overallStatus",
+        "Database endpoint responded; connection state needs review.",
+        "warn"
+      );
+    }
+  });
+
+  $("refreshAll").addEventListener("click", runBoth);
+})();
+</script>
+</body>
+</html>
+```
