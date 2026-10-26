@@ -1,0 +1,281 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Backend Connection Test — Steal An Egg</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --blue: #79adff;
+      --green: #55d6a0;
+      --red: #ff8585;
+      --gold: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.6 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1050px; margin: auto; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    h1 { margin: 0; font-size: 25px; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    p { color: var(--muted); }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 17px;
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 9px 0 5px;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px;
+      color: var(--text);
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    button {
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #182233;
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button:disabled { opacity: .6; cursor: wait; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .result {
+      min-width: 0;
+      padding: 14px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    .result h3 { margin: 0 0 5px; font-size: 15px; }
+    .result p { margin: 5px 0; font-size: 13px; }
+    .status { font-weight: 700; }
+
+    .pending { color: var(--gold); }
+    .ok { color: var(--green); }
+    .fail { color: var(--red); }
+
+    .notice {
+      padding: 11px 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 420px;
+      overflow: auto;
+      padding: 12px;
+      background: #080c12;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    code {
+      color: #bcd5ff;
+      overflow-wrap: anywhere;
+    }
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 650px) {
+      body { padding: 12px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Backend Connection Test</h1>
+      <p>Read-only health checks for the Steal An Egg backend.</p>
+    </div>
+    <button id="testBtn" class="primary" type="button">Run Health Checks</button>
+  </header>
+
+  <section class="panel">
+    <h2>Backend Address</h2>
+    <label for="backendUrl">Backend base URL</label>
+    <input
+      id="backendUrl"
+      type="url"
+      inputmode="url"
+      spellcheck="false"
+      autocomplete="url"
+      placeholder="https://your-backend.example.com"
+      value="https://app-6ad8cbca.deploy.meerasolution.com"
+    >
+    <div class="actions">
+      <button id="testBtn2" type="button">Test Connection</button>
+      <button id="clearBtn" type="button">Clear Results</button>
+    </div>
+    <p class="muted">
+      The address above is the backend URL previously specified for this project.
+      Edit it if your deployment address has changed.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Test Results</h2>
+    <div class="grid">
+      <div class="result">
+        <h3>Backend Health</h3>
+        <div id="healthStatus" class="status pending">Not tested</div>
+        <p id="healthDetail">Waiting for a test.</p>
+        <p id="healthTime" class="muted"></p>
+      </div>
+      <div class="result">
+        <h3>Database Health</h3>
+        <div id="dbStatus" class="status pending">Not tested</div>
+        <p id="dbDetail">Waiting for a test.</p>
+        <p id="dbTime" class="muted"></p>
+      </div>
+    </div>
+    <div id="overall" class="notice" style="margin-top:12px" role="status" aria-live="polite">
+      Ready to test. No request has been sent yet.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Raw Responses</h2>
+    <h3>GET /health</h3>
+    <pre id="healthRaw">Not requested.</pre>
+    <h3>GET /health/database</h3>
+    <pre id="dbRaw">Not requested.</pre>
+  </section>
+
+  <section class="panel">
+    <h2>How to Read the Results</h2>
+    <ul>
+      <li><strong class="ok">Success:</strong> the endpoint returned an HTTP success response with readable content.</li>
+      <li><strong class="fail">Failed:</strong> the request returned an HTTP error, network error, timeout, or unexpected response.</li>
+      <li><strong class="pending">Database status:</strong> a successful health endpoint response does not automatically prove that all database operations work.</li>
+    </ul>
+    <p class="muted">
+      This page cannot diagnose the exact cause of a server-side error from the
+      health response alone. Inspect the raw response and server logs when needed.
+    </p>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const TIMEOUT_MS = 10000;
+
+  function setResult(prefix, status, detail, elapsed) {
+    const statusEl = $(prefix + "Status");
+    statusEl.className = "status " + status.className;
+    statusEl.textContent = status.label;
+    $(prefix + "Detail").textContent = detail;
+    $(prefix + "Time").textContent =
+      elapsed === null ? "" : "Response time: " + elapsed + " ms";
+  }
+
+  function resetResult(prefix) {
+    setResult(
+      prefix,
+      { label: "Not tested", className: "pending" },
+      "Waiting for a test.",
+      null
+    );
+  }
+
+  function normalizeBaseUrl(value) {
+    const url = new URL(value.trim());
+
+    if (!["https:", "http:"].includes(url.protocol)) {
+      throw new Error("Use an HTTP or HTTPS backend URL.");
+    }
+
+    if (url.username || url.password) {
+      throw new Error("Do not put usernames or passwords in the backend URL.");
+    }
+
+    if (url.search || url.hash) {
+      throw new Error("Enter only the base URL, without a query string or fragment.");
+    }
+
+    return url.href.replace(/\/+$/, "");
+  }
+
+  async function checkEndpoint(baseUrl, path, prefix) {
+    const started = performance.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    setResult(
+      prefix,
+      { label: "Checking…", className: "pending" },
+      "Requesting " + path,
+      null
+    );
+
+    try {
+      const response = await fetch(baseUrl + path, {
+        method: "GET",
+       
