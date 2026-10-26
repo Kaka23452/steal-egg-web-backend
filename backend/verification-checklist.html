@@ -1,0 +1,254 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Backend Final Verification Checklist</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #141c30;
+      --border: #293650;
+      --text: #edf3ff;
+      --muted: #a8b6cf;
+      --green: #36d399;
+      --yellow: #fbbf24;
+      --red: #fb7185;
+      --blue: #7db7ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.6 system-ui, Arial, sans-serif;
+    }
+
+    main {
+      max-width: 1000px;
+      margin: auto;
+    }
+
+    h1, h2 { line-height: 1.25; }
+
+    h1 { font-size: clamp(25px, 4vw, 36px); }
+
+    h2 {
+      font-size: 20px;
+      margin-top: 0;
+    }
+
+    p, li { color: var(--muted); }
+
+    .panel {
+      margin: 18px 0;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+    }
+
+    .notice {
+      padding: 14px;
+      border-left: 4px solid var(--yellow);
+      background: #2b2517;
+      border-radius: 8px;
+      color: #ffe8a3;
+    }
+
+    .file-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+    }
+
+    label.check {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 11px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      overflow-wrap: anywhere;
+    }
+
+    input[type="checkbox"] {
+      margin-top: 5px;
+      accent-color: var(--green);
+      flex-shrink: 0;
+    }
+
+    code {
+      color: var(--blue);
+      overflow-wrap: anywhere;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: #342b17;
+      color: var(--yellow);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .small {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    button {
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #20314d;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+    }
+
+    button:hover { background: #2a4165; }
+
+    @media print {
+      body { background: white; color: black; }
+      .panel, label.check { background: white; border-color: #aaa; }
+      p, li, .small { color: #333; }
+      button { display: none; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Backend Final Verification Checklist</h1>
+  <p>
+    Project: Steal An Egg backend and OBS dashboard integration.
+    This page records which files have been saved and what must be reviewed
+    before testing or deployment.
+  </p>
+
+  <div class="notice">
+    <strong>Important:</strong> This is a checklist, not a test runner.
+    Checkbox selections are temporary for this page session. They do not
+    verify the backend, save results to the server, or prove deployment works.
+  </div>
+
+  <section class="panel">
+    <h2>1. Required project files</h2>
+    <p>Check each item only after confirming the file exists at the exact path.</p>
+
+    <div class="file-list">
+      <label class="check"><input type="checkbox"><span>FILE 1 — <code>backend/package.json</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 2 — <code>backend/.env.example</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 3 — <code>backend/schema.sql</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 4 — <code>backend/index.js</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 5 — <code>backend/patch_mshost_spawn.js</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 6 — <code>backend/public/get-key.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 7 — <code>backend/public/admin.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 8 — <code>backend/public/stock-data.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 9 — <code>backend/public/diagnostics.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 10 — <code>backend/public/spawn-events.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 11 — <code>backend/public/api-key-guide.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 12 — <code>backend/public/connection-test.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 13 — <code>backend/public/README.html</code></span></label>
+      <label class="check"><input type="checkbox"><span>FILE 14 — <code>backend/public/verification-checklist.html</code></span></label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. Backend and database review</h2>
+    <p>Complete these checks only after all 14 files are saved.</p>
+
+    <label class="check"><input type="checkbox"><span>Review <code>package.json</code> scripts and dependencies against <code>index.js</code>.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm the hosting environment variable names match the database connection code.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm <code>schema.sql</code> tables and columns match every database query.</span></label>
+    <label class="check"><input type="checkbox"><span>Review buyer login, buyer API-key generation, expiry, and key validation.</span></label>
+    <label class="check"><input type="checkbox"><span>Review admin authentication and buyer-user creation permissions.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm private credentials are configured as server environment variables and are not exposed in HTML.</span></label>
+    <label class="check"><input type="checkbox"><span>Review CORS, request validation, error handling, and rate limits where applicable.</span></label>
+  </section>
+
+  <section class="panel">
+    <h2>3. Spawn-alert data flow</h2>
+
+    <label class="check"><input type="checkbox"><span>Confirm Discord webhook/bot ingestion authenticates with the configured bot-ingest secret.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm duplicate Discord messages do not create duplicate spawn events.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm <strong>Secret</strong>, <strong>Divine</strong>, and <strong>Eternal</strong> alerts retain their tier, egg/pet name, timestamp, and relevant image mapping where available.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm stored stock and schedule response fields match the HTML viewers' actual field mappings.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm <code>GET /events</code> emits the expected SSE event format and reconnects safely after a connection drops.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm the OBS frontend uses the correct backend URL and sends its buyer API key using a supported method.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm spawn times and countdowns use consistent timestamps and do not display stale events as new.</span></label>
+  </section>
+
+  <section class="panel">
+    <h2>4. Frontend page compatibility</h2>
+
+    <label class="check"><input type="checkbox"><span><code>get-key.html</code> request and response fields match the actual buyer authentication routes.</span></label>
+    <label class="check"><input type="checkbox"><span><code>admin.html</code> login token format and user-management requests match the backend.</span></label>
+    <label class="check"><input type="checkbox"><span><code>stock-data.html</code> reads fields actually returned by the stock and schedule endpoints.</span></label>
+    <label class="check"><input type="checkbox"><span><code>diagnostics.html</code> and <code>connection-test.html</code> display failures clearly and do not mistake browser CORS errors for proof the server is down.</span></label>
+    <label class="check"><input type="checkbox"><span><code>spawn-events.html</code> accurately labels its data source and does not claim live SSE updates unless implemented and verified.</span></label>
+    <label class="check"><input type="checkbox"><span><code>api-key-guide.html</code> and <code>README.html</code> describe the final implemented routes, not unverified assumptions.</span></label>
+  </section>
+
+  <section class="panel">
+    <h2>5. Patch-script safety review</h2>
+    <p>
+      <code>backend/patch_mshost_spawn.js</code> must be reviewed against the
+      current <code>backend/index.js</code> before anyone runs it.
+    </p>
+
+    <label class="check"><input type="checkbox"><span>Confirm the patch targets the current file structure and exact insertion points.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm the patch cannot duplicate routes, middleware, event handlers, or database initialization.</span></label>
+    <label class="check"><input type="checkbox"><span>Confirm it preserves the existing API-key authentication and bot-ingest authentication.</span></label>
+    <label class="check"><input type="checkbox"><span>Review a backup/diff and recovery plan before applying any automated patch.</span></label>
+
+    <p class="notice">
+      Do not run the patch script blindly. Its compatibility with the current
+      backend has not been established by this checklist.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>6. Verification record</h2>
+    <p>Mark a status only when evidence is available.</p>
+
+    <p><span class="status">NOT VERIFIED</span> All 14 files exist at the listed paths.</p>
+    <p><span class="status">NOT VERIFIED</span> Backend syntax and dependencies are valid.</p>
+    <p><span class="status">NOT VERIFIED</span> Database connection and schema are compatible.</p>
+    <p><span class="status">NOT VERIFIED</span> Buyer login and API-key generation work end to end.</p>
+    <p><span class="status">NOT VERIFIED</span> Admin user creation works with the deployed backend.</p>
+    <p><span class="status">NOT VERIFIED</span> Discord spawn ingestion and SSE delivery work end to end.</p>
+    <p><span class="status">NOT VERIFIED</span> OBS frontend receives and displays real spawn events.</p>
+
+    <p class="small">
+      These labels intentionally remain unverified until the corresponding
+      files, logs, or live responses have been inspected.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>7. Next-step order</h2>
+    <ol>
+      <li>Save and confirm all 14 files.</li>
+      <li>Review the saved source files and compare route names, payloads, authentication, and database fields.</li>
+      <li>Resolve any compatibility mismatches with minimal targeted edits.</li>
+      <li>Only then plan controlled tests and deployment checks.</li>
+      <li>Record actual results; do not mark a check complete based on assumptions.</li>
+    </ol>
+    <button type="button" onclick="window.print()">Print checklist</button>
+  </section>
+
+  <p class="small">
+    This document is a manual review aid. It does not connect to the backend,
+    change project files, execute tests, or confirm deployment status.
+  </p>
+</main>
+</body>
+</html>
+```
