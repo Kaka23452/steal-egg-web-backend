@@ -1,0 +1,360 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>API Key Guide — Steal An Egg</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #a1aec2;
+      --blue: #79adff;
+      --green: #55d6a0;
+      --gold: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.65 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1000px; margin: 0 auto; }
+
+    header { margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 27px; line-height: 1.3; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 17px 0 7px; font-size: 14px; }
+    p { margin: 8px 0; color: var(--muted); }
+    ul, ol { padding-left: 22px; }
+    li { margin: 5px 0; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+
+    .tag {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 2px 7px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 5px;
+    }
+
+    .warning {
+      border-left: 3px solid var(--gold);
+      padding: 10px 12px;
+      background: #19170f;
+      border-radius: 5px;
+    }
+
+    .good {
+      border-left: 3px solid var(--green);
+      padding: 10px 12px;
+      background: #0d1b18;
+      border-radius: 5px;
+    }
+
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    code {
+      overflow-wrap: anywhere;
+      color: #bcd5ff;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      overflow-x: auto;
+      padding: 13px;
+      background: #080c12;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #d9e5f8;
+      font-size: 12px;
+    }
+
+    .endpoint {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .endpoint:last-child { border-bottom: 0; }
+
+    .endpoint strong { display: block; margin-bottom: 3px; }
+
+    .muted { color: var(--muted); }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: #182233;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover { border-color: var(--blue); }
+
+    .copy-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #copyStatus {
+      min-height: 20px;
+      color: var(--green);
+      font-size: 12px;
+    }
+
+    a { color: var(--blue); }
+
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .panel { padding: 14px; }
+      h1 { font-size: 23px; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>API Key Guide</h1>
+    <p>Steal An Egg backend — buyer authentication and read-only API reference.</p>
+  </header>
+
+  <section class="panel">
+    <h2>1. What is a Buyer API Key?</h2>
+    <p>
+      A buyer API key authenticates requests to protected buyer endpoints.
+      Enter your key only into a trusted frontend or tool that you control.
+    </p>
+    <div class="warning">
+      <strong>Security:</strong> Never share your API key publicly, post it in
+      Discord, or include it in screenshots, public repositories, or frontend
+      source code that other people can inspect.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. Existing Backend Endpoints</h2>
+
+    <div class="endpoint">
+      <strong><span class="tag">GET</span><code>/health</code></strong>
+      <p>Basic backend health information. This endpoint may be public.</p>
+    </div>
+
+    <div class="endpoint">
+      <strong><span class="tag">GET</span><code>/health/database</code></strong>
+      <p>Database health information, according to the existing backend route.</p>
+    </div>
+
+    <div class="endpoint">
+      <strong><span class="tag">GET</span><code>/api/stocks</code></strong>
+      <p>Reads stock data. Use the buyer API key if required by the backend.</p>
+    </div>
+
+    <div class="endpoint">
+      <strong><span class="tag">GET</span><code>/api/schedule</code></strong>
+      <p>Reads schedule data. Use the buyer API key if required by the backend.</p>
+    </div>
+
+    <div class="endpoint">
+      <strong><span class="tag">GET</span><code>/events</code></strong>
+      <p>
+        Existing Server-Sent Events (SSE) route for streaming events.
+        The deployed backend must support the configured authentication method.
+      </p>
+    </div>
+
+    <p class="muted">
+      This guide documents the routes specified for FILE 4. It does not prove
+      that the deployed server is online or that every route is currently working.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>3. Buyer API Key Authentication</h2>
+    <p>The documented buyer API key header is <code>X-API-Key</code>.</p>
+
+    <pre>GET /api/stocks
+X-API-Key: YOUR_BUYER_API_KEY
+Accept: application/json</pre>
+
+    <p>
+      For the existing SSE integration, the documented URL pattern also allows
+      the API key in the query string:
+    </p>
+
+    <pre>GET /events?apiKey=YOUR_BUYER_API_KEY</pre>
+
+    <div class="warning">
+      Query-string keys can appear in browser history, server logs, and monitoring
+      systems. Prefer the request header when the endpoint and client support it.
+      Browser-native EventSource cannot set arbitrary request headers, which is
+      why the existing frontend may use the query parameter.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>4. Example: Read Stock Data</h2>
+    <p>This example performs a GET request only. It does not change backend data.</p>
+
+    <div class="copy-row">
+      <span class="muted">JavaScript fetch example</span>
+      <button type="button" id="copyExample">Copy example</button>
+    </div>
+
+    <pre id="example">async function loadStocks(backendUrl, buyerApiKey) {
+  const response = await fetch(
+    new URL("/api/stocks", backendUrl),
+    {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        "X-API-Key": buyerApiKey
+      },
+      cache: "no-store"
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error("Stock request failed: HTTP " + response.status);
+  }
+
+  return await response.json();
+}</pre>
+    <div id="copyStatus" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="panel">
+    <h2>5. How to Get a Buyer Key</h2>
+    <ol>
+      <li>Open the backend's existing buyer login/key-generation page.</li>
+      <li>Sign in with the buyer account credentials provided to you.</li>
+      <li>Generate or retrieve the key through the supported account workflow.</li>
+      <li>Paste the key into the trusted frontend's API key field.</li>
+      <li>Load stock or schedule data and review the response.</li>
+    </ol>
+    <p class="muted">
+      The exact login and key-generation response depends on the deployed FILE 4
+      implementation. This guide does not generate, reveal, or store keys.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>6. Troubleshooting</h2>
+
+    <h3>HTTP 401 — Unauthorized</h3>
+    <ul>
+      <li>Check that you pasted the buyer key correctly.</li>
+      <li>Confirm that the key belongs to the correct buyer account.</li>
+      <li>Check whether the key has expired or been rotated.</li>
+      <li>Confirm that the request uses the authentication method expected by the backend.</li>
+    </ul>
+
+    <h3>HTTP 403 — Forbidden</h3>
+    <ul>
+      <li>The key may not have permission for the requested endpoint.</li>
+      <li>Check the backend's actual authorization rules.</li>
+    </ul>
+
+    <h3>HTTP 404 — Not Found</h3>
+    <ul>
+      <li>Check the backend base URL and route path.</li>
+      <li>Confirm that the deployed version includes the route.</li>
+    </ul>
+
+    <h3>Network error or CORS error</h3>
+    <ul>
+      <li>Check that the backend is reachable.</li>
+      <li>Confirm the deployed CORS configuration allows the frontend origin and required headers.</li>
+      <li>Check browser developer tools for the actual request error.</li>
+    </ul>
+
+    <h3>Empty stock or schedule response</h3>
+    <ul>
+      <li>A successful request can still return an empty dataset.</li>
+      <li>Inspect the raw JSON response before concluding that the bot or database is broken.</li>
+      <li>Do not treat schedule records as confirmed spawn events unless the returned data supports that interpretation.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>7. Read-Only and Security Rules</h2>
+    <div class="good">
+      This guide makes no backend requests automatically and contains no database
+      writes, user-management actions, or key-generation requests.
+    </div>
+    <ul>
+      <li>Do not put Discord bot tokens or database credentials in HTML.</li>
+      <li>Do not commit buyer API keys to public repositories.</li>
+      <li>Use HTTPS when connecting to a deployed backend.</li>
+      <li>Do not send your buyer key to untrusted websites.</li>
+      <li>Use the backend's official key rotation/revocation workflow if a key is exposed.</li>
+    </ul>
+  </section>
+
+  <footer class="panel">
+    <h2>Compatibility Note</h2>
+    <p>
+      This is a standalone documentation page. It does not verify the live backend,
+      authenticate a buyer, or confirm that the documented routes return the
+      expected data. Those checks will happen only after all 14 files have been
+      saved, as requested.
+    </p>
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const button = document.getElementById("copyExample");
+  const example = document.getElementById("example");
+  const status = document.getElementById("copyStatus");
+
+  button.addEventListener("click", async () => {
+    const text = example.textContent;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      status.textContent = "Example copied.";
+    } catch {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(example);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      status.textContent =
+        "Automatic copy unavailable. Example text selected; copy it manually.";
+    }
+  });
+})();
+</script>
+</body>
+</html>
+```
