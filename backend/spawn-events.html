@@ -1,0 +1,666 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Steal An Egg — Spawn Events</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --blue: #69a7ff;
+      --green: #42d69a;
+      --red: #ff8585;
+      --gold: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1250px; margin: auto; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    h1 { font-size: 25px; margin: 0; }
+    h2 { font-size: 17px; margin: 0 0 12px; }
+    h3 { font-size: 14px; margin: 0 0 8px; }
+    p { color: var(--muted); }
+
+    .panel {
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 17px;
+      margin-bottom: 15px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      min-width: 0;
+      padding: 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 21px;
+      overflow-wrap: anywhere;
+    }
+
+    .stat span { color: var(--muted); font-size: 12px; }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 9px 0 5px;
+    }
+
+    input, select {
+      width: 100%;
+      min-width: 0;
+      padding: 10px;
+      color: var(--text);
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    button {
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #182233;
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button:disabled { opacity: .55; cursor: wait; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+    .status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .status.ok { border-color: #287a5b; }
+    .status.error { border-color: #884343; color: #ffc0c0; }
+    .status.warn { border-color: #80652e; color: var(--gold); }
+
+    .muted { color: var(--muted); }
+
+    .filters {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: 10px;
+    }
+
+    .event-list { display: grid; gap: 10px; margin-top: 14px; }
+
+    .event {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      padding: 13px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      min-width: 0;
+    }
+
+    .event-name { font-weight: 700; overflow-wrap: anywhere; }
+    .event-meta { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .event-time { text-align: right; color: var(--muted); font-size: 12px; }
+
+    .tier {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 3px 7px;
+      margin-bottom: 6px;
+      font-size: 11px;
+    }
+
+    .tier.secret { border-color: #9867d5; color: #d4b5ff; }
+    .tier.divine { border-color: #ba9745; color: #ffe29b; }
+    .tier.eternal { border-color: #d76b9e; color: #ffb7d5; }
+
+    .table-wrap { overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th { color: var(--muted); }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 380px;
+      overflow: auto;
+      padding: 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .filters { grid-template-columns: 1fr; }
+      .event { grid-template-columns: 1fr; }
+      .event-time { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Spawn Events</h1>
+      <p>Read-only view of spawn-related stock records and schedule data.</p>
+    </div>
+    <div class="actions">
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="clearBtn" type="button">Clear View</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>Connect to Backend</h2>
+    <p class="muted">
+      Use a buyer API key accepted by the existing backend. This page does not
+      use an admin token and does not save the key in browser storage.
+    </p>
+
+    <label for="apiKey">Buyer API key</label>
+    <input id="apiKey" type="password" autocomplete="off"
+           placeholder="sk_live_…" spellcheck="false">
+
+    <div class="actions">
+      <button id="loadBtn" class="primary" type="button">Load Spawn Data</button>
+      <button id="toggleKeyBtn" type="button">Show Key</button>
+    </div>
+
+    <div id="status" class="status" role="status" aria-live="polite">
+      Enter a buyer API key to begin.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Overview</h2>
+    <div class="grid">
+      <div class="stat">
+        <strong id="eventCount">—</strong>
+        <span>Spawn-related stock records</span>
+      </div>
+      <div class="stat">
+        <strong id="scheduleCount">—</strong>
+        <span>Schedule records</span>
+      </div>
+      <div class="stat">
+        <strong id="lastLoaded">—</strong>
+        <span>Last successful load</span>
+      </div>
+    </div>
+    <p class="muted">
+      Counts reflect records returned by the API. They are not proof that every
+      Discord event has been received.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Filter Spawn Records</h2>
+    <div class="filters">
+      <div>
+        <label for="search">Search egg, pet, location or tier</label>
+        <input id="search" type="search" placeholder="Search…">
+      </div>
+      <div>
+        <label for="tier">Tier</label>
+        <select id="tier">
+          <option value="">All tiers</option>
+          <option value="Secret">Secret</option>
+          <option value="Divine">Divine</option>
+          <option value="Eternal">Eternal</option>
+          <option value="Other">Other / unspecified</option>
+        </select>
+      </div>
+      <div>
+        <label for="sort">Sort order</label>
+        <select id="sort">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+    </div>
+
+    <p id="filterSummary" class="muted">No data loaded.</p>
+    <div id="eventsList" class="event-list">
+      <p class="muted">Load data to see available records.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>All Returned Stock Records</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>Egg</th>
+            <th>Pet</th>
+            <th>Location</th>
+            <th>Spawn time</th>
+            <th>Expiry time</th>
+          </tr>
+        </thead>
+        <tbody id="stockTable">
+          <tr><td colspan="6" class="muted">No data loaded.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Schedule Response</h2>
+    <pre id="scheduleOutput">No schedule data loaded.</pre>
+  </section>
+
+  <section class="panel">
+    <h2>Raw API Responses</h2>
+    <h3>GET /api/stocks</h3>
+    <pre id="stockRaw">Not requested.</pre>
+    <h3>GET /api/schedule</h3>
+    <pre id="scheduleRaw">Not requested.</pre>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  let stockRecords = [];
+  let scheduleRecords = [];
+  let stockLoaded = false;
+  let scheduleLoaded = false;
+
+  function setStatus(message, type = "") {
+    const el = $("status");
+    el.textContent = message;
+    el.className = "status" + (type ? " " + type : "");
+  }
+
+  function busy(value) {
+    $("loadBtn").disabled = value;
+    $("refreshBtn").disabled = value;
+    $("loadBtn").textContent = value ? "Loading…" : "Load Spawn Data";
+  }
+
+  async function fetchJson(path, apiKey) {
+    const response = await fetch(path, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        "X-API-Key": apiKey
+      },
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error"
+    });
+
+    const raw = await response.text();
+    let data;
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(path + " returned non-JSON content (HTTP " + response.status + ").");
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        (data.message || data.error || "HTTP " + response.status) +
+        " — " + path
+      );
+    }
+
+    if (data && data.success === false) {
+      throw new Error((data.message || data.error || "API request failed") + " — " + path);
+    }
+
+    return data;
+  }
+
+  function pickArray(data, keys) {
+    for (const key of keys) {
+      if (Array.isArray(data?.[key])) return data[key];
+    }
+    return Array.isArray(data) ? data : [];
+  }
+
+  function getValue(record, keys) {
+    for (const key of keys) {
+      if (record?.[key] !== undefined &&
+          record?.[key] !== null &&
+          record?.[key] !== "") {
+        return record[key];
+      }
+    }
+    return "";
+  }
+
+  function dateValue(record) {
+    return getValue(record, [
+      "spawnedAt", "spawned_at", "spawnTime", "spawn_time",
+      "timestamp", "time", "created_at", "createdAt"
+    ]);
+  }
+
+  function timeLabel(value) {
+    if (!value) return "Time not provided";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : date.toLocaleString();
+  }
+
+  function tierClass(tier) {
+    const value = String(tier || "").toLowerCase();
+    return ["secret", "divine", "eternal"].includes(value) ? value : "";
+  }
+
+  function recordMatches(record) {
+    const tier = String(getValue(record, ["tier", "rarity"]));
+    const egg = String(getValue(record, ["eggName", "egg_name", "egg"]));
+    const pet = String(getValue(record, ["petName", "pet_name", "pet"]));
+    const location = String(getValue(record, [
+      "locationName", "location_name", "location", "biome"
+    ]));
+
+    const query = $("search").value.trim().toLowerCase();
+    const selectedTier = $("tier").value;
+
+    const matchesQuery = !query ||
+      [tier, egg, pet, location].join(" ").toLowerCase().includes(query);
+
+    let matchesTier = true;
+
+    if (selectedTier === "Other") {
+      matchesTier = !["secret", "divine", "eternal"].includes(tier.toLowerCase());
+    } else if (selectedTier) {
+      matchesTier = tier.toLowerCase() === selectedTier.toLowerCase();
+    }
+
+    return matchesQuery && matchesTier;
+  }
+
+  function sortedFilteredRecords() {
+    const list = stockRecords.filter(recordMatches);
+
+    list.sort((a, b) => {
+      const ta = new Date(dateValue(a)).getTime();
+      const tb = new Date(dateValue(b)).getTime();
+
+      const aValid = Number.isFinite(ta);
+      const bValid = Number.isFinite(tb);
+
+      if (!aValid && !bValid) return 0;
+      if (!aValid) return 1;
+      if (!bValid) return -1;
+
+      return $("sort").value === "oldest" ? ta - tb : tb - ta;
+    });
+
+    return list;
+  }
+
+  function makeCell(row, value) {
+    const cell = document.createElement("td");
+    cell.textContent = value === undefined || value === null || value === ""
+      ? "—" : String(value);
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function render() {
+    const list = sortedFilteredRecords();
+    $("filterSummary").textContent = stockLoaded
+      ? "Showing " + list.length + " of " + stockRecords.length + " returned stock records."
+      : "No data loaded.";
+
+    const events = $("eventsList");
+    events.replaceChildren();
+
+    if (!list.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = stockLoaded
+        ? "No records match the selected filters."
+        : "Load data to see available records.";
+      events.appendChild(empty);
+    } else {
+      for (const record of list) {
+        const tier = String(getValue(record, ["tier", "rarity"]) || "Unspecified");
+        const egg = getValue(record, ["eggName", "egg_name", "egg"]);
+        const pet = getValue(record, ["petName", "pet_name", "pet"]);
+        const location = getValue(record, [
+          "locationName", "location_name", "location", "biome"
+        ]);
+
+        const card = document.createElement("article");
+        card.className = "event";
+
+        const main = document.createElement("div");
+        const badge = document.createElement("span");
+        badge.className = "tier " + tierClass(tier);
+        badge.textContent = tier;
+        main.appendChild(badge);
+
+        const title = document.createElement("div");
+        title.className = "event-name";
+        title.textContent = [egg, pet].filter(Boolean).join(" · ") || "Unnamed record";
+        main.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "event-meta";
+        meta.textContent = "Location: " + (location || "Not provided");
+        main.appendChild(meta);
+
+        const side = document.createElement("div");
+        side.className = "event-time";
+        side.textContent = timeLabel(dateValue(record));
+
+        card.append(main, side);
+        events.appendChild(card);
+      }
+    }
+
+    const tbody = $("stockTable");
+    tbody.replaceChildren();
+
+    if (!list.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "muted";
+      cell.textContent = stockLoaded ? "No matching records." : "No data loaded.";
+      row.appendChild(cell);
+      tbody.appendChild(row);
+    } else {
+      for (const record of list) {
+        const row = document.createElement("tr");
+        makeCell(row, getValue(record, ["tier", "rarity"]) || "Unspecified");
+        makeCell(row, getValue(record, ["eggName", "egg_name", "egg"]));
+        makeCell(row, getValue(record, ["petName", "pet_name", "pet"]));
+        makeCell(row, getValue(record, [
+          "locationName", "location_name", "location", "biome"
+        ]));
+        makeCell(row, timeLabel(dateValue(record)));
+        makeCell(row, timeLabel(getValue(record, [
+          "expiresAt", "expires_at", "expiry", "expires"
+        ])));
+        tbody.appendChild(row);
+      }
+    }
+  }
+
+  async function loadData() {
+    const key = $("apiKey").value.trim();
+
+    if (!key) {
+      setStatus("Enter a buyer API key first.", "error");
+      $("apiKey").focus();
+      return;
+    }
+
+    busy(true);
+    setStatus("Loading data from the two existing endpoints…");
+
+    let stockError = "";
+    let scheduleError = "";
+
+    try {
+      try {
+        const data = await fetchJson("/api/stocks", key);
+        stockRecords = pickArray(data, [
+          "stocks", "currentStocks", "items", "data"
+        ]);
+        stockLoaded = true;
+        $("stockRaw").textContent = JSON.stringify(data, null, 2);
+        $("eventCount").textContent = String(
+          Number.isFinite(data.count) ? data.count : stockRecords.length
+        );
+      } catch (error) {
+        stockError = error.message;
+        $("stockRaw").textContent = "Request failed: " + error.message;
+      }
+
+      try {
+        const data = await fetchJson("/api/schedule", key);
+        scheduleRecords = pickArray(data, [
+          "schedules", "schedule", "items", "data"
+        ]);
+        scheduleLoaded = true;
+        $("scheduleRaw").textContent = JSON.stringify(data, null, 2);
+        $("scheduleOutput").textContent = JSON.stringify(data, null, 2);
+        $("scheduleCount").textContent = String(scheduleRecords.length);
+      } catch (error) {
+        scheduleError = error.message;
+        $("scheduleRaw").textContent = "Request failed: " + error.message;
+        $("scheduleOutput").textContent = "Request failed: " + error.message;
+      }
+
+      render();
+
+      if (!stockError && !scheduleError) {
+        $("lastLoaded").textContent = new Date().toLocaleTimeString();
+        setStatus("Both endpoints returned successful responses.", "ok");
+      } else if (!stockError || !scheduleError) {
+        $("lastLoaded").textContent = new Date().toLocaleTimeString();
+        setStatus(
+          "Partial load. Stock: " + (stockError || "OK") +
+          " | Schedule: " + (scheduleError || "OK"),
+          "warn"
+        );
+      } else {
+        setStatus(
+          "Both requests failed. Stock: " + stockError +
+          " | Schedule: " + scheduleError,
+          "error"
+        );
+      }
+    } finally {
+      busy(false);
+    }
+  }
+
+  $("loadBtn").addEventListener("click", loadData);
+  $("refreshBtn").addEventListener("click", loadData);
+  $("search").addEventListener("input", render);
+  $("tier").addEventListener("change", render);
+  $("sort").addEventListener("change", render);
+
+  $("toggleKeyBtn").addEventListener("click", () => {
+    const input = $("apiKey");
+    const showing = input.type === "password";
+    input.type = showing ? "text" : "password";
+    $("toggleKeyBtn").textContent = showing ? "Hide Key" : "Show Key";
+  });
+
+  $("clearBtn").addEventListener("click", () => {
+    stockRecords = [];
+    scheduleRecords = [];
+    stockLoaded = false;
+    scheduleLoaded = false;
+
+    $("apiKey").value = "";
+    $("eventCount").textContent = "—";
+    $("scheduleCount").textContent = "—";
+    $("lastLoaded").textContent = "—";
+    $("stockRaw").textContent = "Not requested.";
+    $("scheduleRaw").textContent = "Not requested.";
+    $("scheduleOutput").textContent = "No schedule data loaded.";
+    $("search").value = "";
+    $("tier").value = "";
+    $("sort").value = "newest";
+
+    render();
+    setStatus("View cleared. No backend records were changed.");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
+```
