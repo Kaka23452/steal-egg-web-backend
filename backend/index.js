@@ -1,776 +1,1572 @@
+'use strict';
+
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
 
-dotenv.config();
-
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const JWT_SECRET = process.env.JWT_SECRET;
-const BOT_INGEST_KEY = process.env.BOT_INGEST_KEY;
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const OVERLAY_TOKEN = process.env.OVERLAY_TOKEN;
-const DEFAULT_TTL_MINUTES = Math.max(
+const DATABASE_URL =
+  process.env.DATABASE_URL ||
+  process.env.TIDB_DATABASE_URL ||
+  '';
+
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const BOT_INGEST_KEY = process.env.BOT_INGEST_KEY || '';
+const ADMIN_USERNAME =
+  process.env.ADMIN_USERNAME ||
+  process.env.MASTER_USERNAME ||
+  'Admin';
+const ADMIN_PASSWORD =
+  process.env.ADMIN_PASSWORD ||
+  process.env.MASTER_PASSWORD ||
+  '';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+
+const DEFAULT_TIER_TTL_MINUTES = Math.max(
   1,
   Number(process.env.DEFAULT_TIER_TTL_MINUTES || 45)
 );
 
-if (!JWT_SECRET || !BOT_INGEST_KEY || !ADMIN_USERNAME ||
-    !ADMIN_PASSWORD || !OVERLAY_TOKEN) {
-  throw new Error(
-    'Missing required environment variables: JWT_SECRET, BOT_INGEST_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, OVERLAY_TOKEN'
-  );
-}
+const MAX_EVENTS = 250;
+const sseClients = new Map();
+const recentEvents = [];
+const seenMessageIds = new Set();
+
+let pool = null;
+let dbStatus = {
+  connected: false,
+  message: 'Database not initialized'
+};
+let lastIngestAt = null;
 
 app.disable('x-powered-by');
-app.use(express.json({ limit: '256kb' }));
-
-const allowedOrigins = (process.env.ALLOWED_ORIGIN || '')
-  .split(',')
-  .map(value => value.trim())
-  .filter(Boolean);
 
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('Origin not allowed by CORS'));
+    const allowed =
+      ALLOWED_ORIGIN === '*' ||
+      ALLOWED_ORIGIN
+        .split(',')
+        .map(value => value.trim())
+        .includes(origin || '');
+
+    callback(
+      allowed ? null : new Error('Origin not allowed by CORS'),
+      allowed
+    );
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
     'Authorization',
+    'X-API-Key',
     'X-Bot-Key',
-    'X-API-Key'
-  ]
+    'X-Webhook-Secret'
+  ],
+  exposedHeaders: ['Content-Type']
 }));
 
-let pool = null;
-const sseClients = new Set();
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-function sendJsonError(res, status, message) {
-  return res.status(status).json({ error: message });
-}
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: false,
+  maxAge: '5m'
+}));
 
-function sha256(value) {
-  return crypto.createHash('sha256').update(value).digest('hex');
-}
+const str = value =>
+  value == null ? '' : String(value).trim();
+
+const sha256 = value =>
+  crypto.createHash('sha256').update(String(value)).digest('hex');
 
 function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length &&
-    crypto.timingSafeEqual(left, right);
+  const first = Buffer.from(String(a || ''));
+  const second = Buffer.from(String(b || ''));
+
+  return (
+    first.length > 0 &&
+    first.length === second.length &&
+    crypto.timingSafeEqual(first, second)
+  );
 }
 
-function createToken(payload, expiresIn) {
+function bearer(req) {
+  const authorization = str(req.get('authorization'));
+
+  return /^Bearer\s+/i.test(authorization)
+    ? authorization.replace(/^Bearer\s+/i, '').trim()
+    : '';
+}
+
+function signToken(payload, expiresIn = '12h') {
+  if (!JWT_SECRET) {
+    throw new Error('JWT_SECRET is not configured');
+  }
+
   return jwt.sign(payload, JWT_SECRET, { expiresIn });
 }
 
-function verifyToken(token) {
-  return jwt.verify(token, JWT_SECRET);
+function verifySession(req, role) {
+  const token = bearer(req);
+
+  if (!token || !JWT_SECRET) {
+    return null;
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+
+    if (role && payload.role !== role) {
+      return null;
+    }
+
+    return payload;
+  } catch (_) {
+    return null;
+  }
 }
 
-async function getDb() {
-  if (!pool) throw new Error('Database is not configured');
-  return pool;
+function sendError(res, status, error, extra = {}) {
+  return res.status(status).json({
+    success: false,
+    error,
+    ...extra
+  });
 }
 
-async function initDatabase() {
-  const connectionString = process.env.DATABASE_URL;
+/* =========================================================
+   DATABASE
+   Supports DATABASE_URL or TIDB_DATABASE_URL.
+   Required tables must already exist in schema.sql.
+========================================================= */
 
-  if (!connectionString) {
-    console.warn('[Database] DATABASE_URL is missing; database routes will be unavailable.');
+async function initDb() {
+  if (!DATABASE_URL) {
+    dbStatus = {
+      connected: false,
+      message: 'DATABASE_URL / TIDB_DATABASE_URL is not configured'
+    };
     return;
   }
 
-  pool = mysql.createPool({
-    uri: connectionString,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
-    timezone: 'Z',
-    enableKeepAlive: true
-  });
-
   try {
-    const connection = await pool.getConnection();
-    await connection.ping();
-    connection.release();
-    console.log('[Database] Connected successfully.');
+    pool = mysql.createPool(DATABASE_URL);
+
+    await pool.query('SELECT 1');
+
+    const requiredTables = [
+      'users',
+      'api_keys',
+      'egg_pet_map',
+      'location_alias',
+      'stocks',
+      'processed_messages'
+    ];
+
+    for (const table of requiredTables) {
+      const [rows] = await pool.execute(
+        'SHOW TABLES LIKE ?',
+        [table]
+      );
+
+      if (!rows.length) {
+        throw new Error(
+          `Required table "${table}" is missing. Run backend/schema.sql first.`
+        );
+      }
+    }
+
+    dbStatus = {
+      connected: true,
+      message: 'Database connected; required tables verified'
+    };
+
+    console.log('[database] Connected and required tables verified.');
   } catch (error) {
-    console.error('[Database] Connection failed:', error.message);
-    await pool.end().catch(() => {});
+    dbStatus = {
+      connected: false,
+      message: error.message || 'Database connection failed'
+    };
+
+    console.error('[database]', dbStatus.message);
+
+    if (pool) {
+      try {
+        await pool.end();
+      } catch (_) {}
+    }
+
     pool = null;
   }
 }
 
-function requireBuyer(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ')
-    ? header.slice(7)
-    : '';
+function needDb(res) {
+  if (!pool) {
+    sendError(
+      res,
+      503,
+      'Database is not connected. Check DATABASE_URL / TIDB_DATABASE_URL and schema.sql.',
+      { databaseMessage: dbStatus.message }
+    );
 
-  if (!token) return sendJsonError(res, 401, 'Buyer login required');
-
-  try {
-    const payload = verifyToken(token);
-    if (payload.role !== 'buyer' || !payload.userId) {
-      return sendJsonError(res, 403, 'Buyer access required');
-    }
-    req.user = payload;
-    next();
-  } catch {
-    return sendJsonError(res, 401, 'Session expired or invalid');
+    return false;
   }
+
+  return true;
 }
 
-function requireAdmin(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ')
-    ? header.slice(7)
-    : '';
+/* =========================================================
+   BUYER API KEY AUTHENTICATION
+   ONE buyer key works for BOTH:
+   GET /api/stocks
+   GET /api/schedule
+   GET /events?apiKey=...
 
-  if (!token) return sendJsonError(res, 401, 'Admin login required');
+   EventSource cannot set custom headers, so /events supports
+   the apiKey query parameter as well as X-API-Key.
+========================================================= */
 
-  try {
-    const payload = verifyToken(token);
-    if (payload.role !== 'admin') {
-      return sendJsonError(res, 403, 'Admin access required');
-    }
-    req.admin = payload;
-    next();
-  } catch {
-    return sendJsonError(res, 401, 'Admin session expired or invalid');
+async function findApiKey(rawKey) {
+  if (!pool || !rawKey) {
+    return null;
   }
-}
 
-function requireBot(req, res, next) {
-  const supplied = req.get('X-Bot-Key') || '';
-  if (!safeEqual(supplied, BOT_INGEST_KEY)) {
-    return sendJsonError(res, 401, 'Invalid bot key');
-  }
-  next();
-}
+  const keyHash = sha256(rawKey);
 
-function requireOverlay(req, res, next) {
-  const supplied = req.query.token;
-  if (typeof supplied !== 'string' ||
-      !safeEqual(supplied, OVERLAY_TOKEN)) {
-    return sendJsonError(res, 401, 'Invalid overlay token');
+  const [rows] = await pool.execute(
+    `SELECT
+       k.id AS key_id,
+       k.user_id,
+       u.email
+     FROM api_keys k
+     INNER JOIN users u ON u.id = k.user_id
+     WHERE k.key_hash = ?
+       AND k.is_active = 1
+       AND u.is_active = 1
+       AND (
+         k.expires_at IS NULL
+         OR k.expires_at > CURRENT_TIMESTAMP
+       )
+     LIMIT 1`,
+    [keyHash]
+  );
+
+  if (!rows.length) {
+    return null;
   }
-  next();
+
+  pool.execute(
+    'UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [rows[0].key_id]
+  ).catch(() => {});
+
+  return rows[0];
 }
 
 async function requireApiKey(req, res, next) {
-  const supplied = req.get('X-API-Key') || '';
-  if (!supplied || supplied.length > 256) {
-    return sendJsonError(res, 401, 'API key required');
+  if (!needDb(res)) {
+    return;
+  }
+
+  // Header first, then EventSource query string, then legacy query alias.
+  const rawKey = str(
+    req.get('x-api-key') ||
+    req.query.apiKey ||
+    req.query.key
+  );
+
+  if (!rawKey) {
+    return sendError(res, 401, 'API key required');
   }
 
   try {
-    const db = await getDb();
-    const [rows] = await db.execute(
-      `SELECT ak.id, ak.user_id
-       FROM api_keys ak
-       JOIN users u ON u.id = ak.user_id
-       WHERE ak.key_hash = ?
-         AND ak.is_active = 1
-         AND ak.expires_at > UTC_TIMESTAMP()
-         AND u.is_active = 1
-       LIMIT 1`,
-      [sha256(supplied)]
-    );
+    const record = await findApiKey(rawKey);
 
-    if (!rows.length) {
-      return sendJsonError(res, 401, 'API key is invalid or expired');
+    if (!record) {
+      return sendError(
+        res,
+        401,
+        'Invalid, disabled, expired, or unrecognized API key'
+      );
     }
 
-    req.apiKey = rows[0];
-    await db.execute(
-      'UPDATE api_keys SET last_used_at = UTC_TIMESTAMP() WHERE id = ?',
-      [req.apiKey.id]
-    );
-    next();
+    req.apiKeyOwner = record;
+    return next();
   } catch (error) {
-    console.error('[API key auth]', error.message);
-    return sendJsonError(res, 503, 'Database unavailable');
+    console.error(
+      '[API key validation]',
+      error.message || error
+    );
+
+    return sendError(res, 503, 'Could not validate API key');
   }
 }
 
-function broadcast(event) {
-  const payload = `event: spawn\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const client of sseClients) {
+/* =========================================================
+   SPAWN DATA HELPERS
+========================================================= */
+
+function normalizeTier(value) {
+  const knownTiers = [
+    'Secret',
+    'Divine',
+    'Eternal',
+    'Cosmic',
+    'Transcendent',
+    'Mythic',
+    'Legendary',
+    'Epic',
+    'Rare',
+    'Uncommon',
+    'Common'
+  ];
+
+  const match = knownTiers.find(
+    tier => tier.toLowerCase() === str(value).toLowerCase()
+  );
+
+  return match || str(value) || 'Unknown';
+}
+
+function parseIngest(body) {
+  const embeds = Array.isArray(body.embeds)
+    ? body.embeds.flatMap(embed => [
+        embed.title,
+        embed.description,
+        ...(Array.isArray(embed.fields)
+          ? embed.fields.flatMap(field => [
+              field.name,
+              field.value
+            ])
+          : [])
+      ])
+    : [];
+
+  const raw = [
+    body.message,
+    body.content,
+    body.description,
+    body.rawText,
+    body.rawMessage,
+    body.embedText,
+    body.title,
+    ...embeds
+  ]
+    .filter(Boolean)
+    .map(String)
+    .join('\n')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .trim();
+
+  function findLabel(labels) {
+    for (const label of labels) {
+      const escaped = label.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        '\\$&'
+      );
+
+      const regex = new RegExp(
+        '(?:^|\\n|\\s)' +
+          escaped +
+          '\\s*[:：-]\\s*([^\\n]+)',
+        'i'
+      );
+
+      const match = raw.match(regex);
+
+      if (match && match[1]) {
+        return match[1]
+          .trim()
+          .split(
+            /\s+(?:Location|Biome|Spawned|Tier|Rarity)\s*[:：-]/i
+          )[0]
+          .trim();
+      }
+    }
+
+    return '';
+  }
+
+  const eggName = str(
+    body.eggName ||
+    body.egg ||
+    body.petName ||
+    findLabel([
+      'Egg Name',
+      'Spawned Egg',
+      'Egg',
+      'Pet Name',
+      'Pet'
+    ])
+  ) || 'Unknown';
+
+  const location = str(
+    body.location ||
+    body.biome ||
+    body.area ||
+    findLabel([
+      'Location',
+      'Biome',
+      'Map',
+      'Area',
+      'Region'
+    ])
+  ) || 'Unknown';
+
+  const tier = normalizeTier(
+    body.tier ||
+    body.rarity ||
+    (raw.match(/\b(Secret|Divine|Eternal)\b/i) || [])[1]
+  );
+
+  const explicitTime =
+    body.spawnedAt ||
+    body.spawned_at ||
+    body.timestamp ||
+    body.time;
+
+  const parsedDate = explicitTime
+    ? new Date(
+        typeof explicitTime === 'number' &&
+        explicitTime < 1e12
+          ? explicitTime * 1000
+          : explicitTime
+      )
+    : new Date();
+
+  const spawnedAt = Number.isFinite(parsedDate.getTime())
+    ? parsedDate
+    : new Date();
+
+  const messageId = str(
+    body.messageId ||
+    body.message_id ||
+    body.id
+  );
+
+  return {
+    eggName,
+    petName: eggName,
+    tier,
+    location,
+    biome: location,
+    spawnedAt,
+    messageId,
+    rawMessage: raw.slice(0, 4000),
+    spawned:
+      str(body.spawned || body.spawnedAgo || body.spawnedLabel) ||
+      'SPAWNED NOW'
+  };
+}
+
+function publish(event) {
+  const spawnedMs = new Date(event.spawnedAt).getTime();
+
+  const packet = `data: ${JSON.stringify({
+    ...event,
+    type: 'SPAWN',
+    eventType: 'spawn',
+    timestamp: event.spawnedAt,
+    time: event.spawnedAt,
+    elapsedSeconds: Number.isFinite(spawnedMs)
+      ? Math.max(0, Math.floor((Date.now() - spawnedMs) / 1000))
+      : 0
+  })}\n\n`;
+
+  for (const [id, client] of sseClients) {
     try {
-      client.write(payload);
-    } catch {
-      sseClients.delete(client);
+      client.write(packet);
+    } catch (_) {
+      sseClients.delete(id);
     }
   }
 }
 
-function parseDate(value) {
-  if (!value) return new Date();
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-app.get('/health', async (req, res) => {
-  let databaseConnected = false;
-
-  if (pool) {
-    try {
-      await pool.query('SELECT 1');
-      databaseConnected = true;
-    } catch {}
+async function storeSpawn(parsed) {
+  if (!pool) {
+    return null;
   }
 
+  const [mapping] = await pool.execute(
+    `SELECT pet_name, pet_image_url
+     FROM egg_pet_map
+     WHERE LOWER(egg_name) = LOWER(?)
+       AND is_active = 1
+     LIMIT 1`,
+    [parsed.eggName]
+  );
+
+  const petName =
+    mapping[0]?.pet_name ||
+    parsed.petName ||
+    parsed.eggName;
+
+  const petImageUrl =
+    mapping[0]?.pet_image_url ||
+    null;
+
+  const expiry = new Date(
+    parsed.spawnedAt.getTime() +
+    DEFAULT_TIER_TTL_MINUTES * 60000
+  );
+
+  const [result] = await pool.execute(
+    `INSERT INTO stocks (
+       tier,
+       egg_name,
+       pet_name,
+       pet_image_url,
+       location_name,
+       spawned_at,
+       expires_at,
+       source_message_id,
+       created_at,
+       updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    [
+      parsed.tier,
+      parsed.eggName,
+      petName,
+      petImageUrl,
+      parsed.location,
+      parsed.spawnedAt,
+      expiry,
+      parsed.messageId || null
+    ]
+  );
+
+  const event = {
+    id: result.insertId,
+    tier: parsed.tier,
+    eggName: parsed.eggName,
+    petName,
+    petImageUrl,
+    location: parsed.location,
+    biome: parsed.location,
+    spawnedAt: parsed.spawnedAt.toISOString(),
+    timestamp: parsed.spawnedAt.toISOString(),
+    spawned: parsed.spawned,
+    messageId: parsed.messageId || null,
+    type: 'SPAWN',
+    eventType: 'spawn'
+  };
+
+  recentEvents.unshift(event);
+
+  if (recentEvents.length > MAX_EVENTS) {
+    recentEvents.length = MAX_EVENTS;
+  }
+
+  publish(event);
+  lastIngestAt = new Date().toISOString();
+
+  return event;
+}
+
+/* =========================================================
+   BASIC HEALTH / HOME
+========================================================= */
+
+app.get('/', (_req, res) => {
+  res.type('html').send(
+    '<!doctype html><meta charset="utf-8">' +
+    '<title>Steal An Egg Backend</title>' +
+    '<h1>Steal An Egg backend is running</h1>' +
+    '<p><a href="/health">Health</a> · ' +
+    '<a href="/get-key">Buyer key</a> · ' +
+    '<a href="/admin">Admin</a></p>'
+  );
+});
+
+app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'steal-egg-saas-backend',
-    databaseConfigured: Boolean(pool),
-    databaseConnected,
-    activeSseClients: sseClients.size,
-    time: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    databaseConfigured: Boolean(DATABASE_URL),
+    databaseConnected: dbStatus.connected,
+    databaseMessage: dbStatus.message,
+    lastIngestAt,
+    sseClients: sseClients.size,
+    configured: {
+      jwtSecret: Boolean(JWT_SECRET),
+      botIngestKey: Boolean(BOT_INGEST_KEY),
+      adminPassword: Boolean(ADMIN_PASSWORD)
+    }
   });
 });
 
-app.get('/api/schedule', async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+app.get('/health/database', async (_req, res) => {
+  if (!pool) {
+    return res.status(503).json({
+      ok: false,
+      ...dbStatus
+    });
+  }
 
   try {
-    const [rows] = await pool.execute(
-      `SELECT id, tier, egg_name AS eggName, pet_name AS petName,
-              pet_image_url AS petImageUrl, location_name AS location,
-              spawned_at AS spawnedAt, expires_at AS expiresAt
-       FROM stocks
-       WHERE expires_at > UTC_TIMESTAMP()
-       ORDER BY spawned_at DESC
-       LIMIT 100`
-    );
-    res.json({ stocks: rows });
+    await pool.query('SELECT 1');
+
+    return res.json({
+      ok: true,
+      connected: true,
+      message: dbStatus.message
+    });
   } catch (error) {
-    console.error('[Schedule]', error.message);
-    sendJsonError(res, 500, 'Could not load current stocks');
+    return res.status(503).json({
+      ok: false,
+      connected: false,
+      message: error.message
+    });
   }
 });
 
-app.post('/api/auth/register', async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+/* =========================================================
+   DISCORD BOT INGEST
+   Uses BOT_INGEST_KEY, NOT buyer API keys.
+========================================================= */
 
-  const email = String(req.body.email || '').trim().toLowerCase();
-  const password = String(req.body.password || '');
-
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      password.length < 10 || password.length > 128) {
-    return sendJsonError(
+app.post('/api/ingest', async (req, res) => {
+  if (!BOT_INGEST_KEY) {
+    return sendError(
       res,
-      400,
-      'Enter a valid email and a password of 10–128 characters'
+      503,
+      'BOT_INGEST_KEY is not configured'
     );
   }
+
+  if (!safeEqual(req.get('x-bot-key'), BOT_INGEST_KEY)) {
+    return sendError(res, 401, 'Invalid bot key');
+  }
+
+  if (!needDb(res)) {
+    return;
+  }
+
+  const parsed = parseIngest(req.body || {});
 
   try {
-    const passwordHash = await bcrypt.hash(password, 12);
-    const [result] = await pool.execute(
-      'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-      [email, passwordHash]
-    );
+    if (parsed.messageId) {
+      if (seenMessageIds.has(parsed.messageId)) {
+        return res.json({
+          success: true,
+          duplicate: true,
+          event: null
+        });
+      }
 
-    res.status(201).json({
-      ok: true,
-      userId: result.insertId,
-      message: 'Account created. You can now log in.'
-    });
-  } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
-      return sendJsonError(res, 409, 'Email already registered');
-    }
-    console.error('[Register]', error.message);
-    sendJsonError(res, 500, 'Could not create account');
-  }
-});
+      const [existing] = await pool.execute(
+        'SELECT message_id FROM processed_messages WHERE message_id = ? LIMIT 1',
+        [parsed.messageId]
+      );
 
-app.post('/api/auth/login', async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+      if (existing.length) {
+        seenMessageIds.add(parsed.messageId);
 
-  const email = String(req.body.email || '').trim().toLowerCase();
-  const password = String(req.body.password || '');
+        return res.json({
+          success: true,
+          duplicate: true
+        });
+      }
 
-  try {
-    const [rows] = await pool.execute(
-      'SELECT id, email, password_hash, is_active FROM users WHERE email = ? LIMIT 1',
-      [email]
-    );
-
-    if (!rows.length || !rows[0].is_active ||
-        !(await bcrypt.compare(password, rows[0].password_hash))) {
-      return sendJsonError(res, 401, 'Invalid email or password');
-    }
-
-    const token = createToken(
-      { role: 'buyer', userId: rows[0].id, email: rows[0].email },
-      process.env.USER_SESSION_TTL || '1800s'
-    );
-
-    res.json({
-      ok: true,
-      token,
-      expiresIn: process.env.USER_SESSION_TTL || 1800,
-      user: { id: rows[0].id, email: rows[0].email }
-    });
-  } catch (error) {
-    console.error('[Login]', error.message);
-    sendJsonError(res, 503, 'Login service unavailable');
-  }
-});
-
-app.post('/api/keys/generate', requireBuyer, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  try {
-    const rawKey = `sae_${crypto.randomBytes(32).toString('hex')}`;
-    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-
-    await pool.execute(
-      `INSERT INTO api_keys
-       (user_id, key_hash, key_prefix, expires_at)
-       VALUES (?, ?, ?, ?)`,
-      [
-        req.user.userId,
-        sha256(rawKey),
-        rawKey.slice(0, 12),
-        expiresAt.toISOString().slice(0, 19).replace('T', ' ')
-      ]
-    );
-
-    res.status(201).json({
-      ok: true,
-      apiKey: rawKey,
-      expiresAt: expiresAt.toISOString(),
-      warning: 'Copy this key now. It will not be shown again.'
-    });
-  } catch (error) {
-    console.error('[Generate key]', error.message);
-    sendJsonError(res, 500, 'Could not generate API key');
-  }
-});
-
-app.get('/api/keys', requireBuyer, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  try {
-    const [rows] = await pool.execute(
-      `SELECT id, key_prefix AS keyPrefix, is_active AS isActive,
-              expires_at AS expiresAt, last_used_at AS lastUsedAt,
-              created_at AS createdAt
-       FROM api_keys WHERE user_id = ? ORDER BY created_at DESC`,
-      [req.user.userId]
-    );
-    res.json({ keys: rows });
-  } catch (error) {
-    console.error('[List keys]', error.message);
-    sendJsonError(res, 500, 'Could not list API keys');
-  }
-});
-
-app.post('/api/admin/login', (req, res) => {
-  const username = String(req.body.username || '');
-  const password = String(req.body.password || '');
-
-  if (!safeEqual(username, ADMIN_USERNAME) ||
-      !safeEqual(password, ADMIN_PASSWORD)) {
-    return sendJsonError(res, 401, 'Invalid admin credentials');
-  }
-
-  const token = createToken({ role: 'admin' }, '1h');
-  res.json({ ok: true, token, expiresIn: 3600 });
-});
-
-app.get('/api/admin/users', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  try {
-    const [rows] = await pool.execute(
-      `SELECT u.id, u.email, u.is_active AS isActive,
-              u.created_at AS createdAt,
-              COUNT(ak.id) AS apiKeyCount
-       FROM users u
-       LEFT JOIN api_keys ak ON ak.user_id = u.id
-       GROUP BY u.id
-       ORDER BY u.created_at DESC`
-    );
-    res.json({ users: rows });
-  } catch (error) {
-    console.error('[Admin users]', error.message);
-    sendJsonError(res, 500, 'Could not list users');
-  }
-});
-
-app.post('/api/admin/users', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  const email = String(req.body.email || '').trim().toLowerCase();
-  const password = String(req.body.password || '');
-
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      password.length < 10 || password.length > 128) {
-    return sendJsonError(
-      res, 400, 'Valid email and password (10–128 characters) required'
-    );
-  }
-
-  try {
-    const passwordHash = await bcrypt.hash(password, 12);
-    const [result] = await pool.execute(
-      'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-      [email, passwordHash]
-    );
-    res.status(201).json({ ok: true, userId: result.insertId, email });
-  } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
-      return sendJsonError(res, 409, 'Email already exists');
-    }
-    console.error('[Admin create user]', error.message);
-    sendJsonError(res, 500, 'Could not create user');
-  }
-});
-
-app.put('/api/admin/users/:id/status', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  const active = req.body.isActive;
-  if (typeof active !== 'boolean') {
-    return sendJsonError(res, 400, 'isActive must be true or false');
-  }
-
-  try {
-    const [result] = await pool.execute(
-      'UPDATE users SET is_active = ? WHERE id = ?',
-      [active ? 1 : 0, req.params.id]
-    );
-    if (!result.affectedRows) {
-      return sendJsonError(res, 404, 'User not found');
-    }
-    if (!active) {
       await pool.execute(
-        'UPDATE api_keys SET is_active = 0 WHERE user_id = ?',
-        [req.params.id]
+        'INSERT INTO processed_messages (message_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)',
+        [parsed.messageId]
       );
+
+      seenMessageIds.add(parsed.messageId);
     }
-    res.json({ ok: true });
+
+    const event = await storeSpawn(parsed);
+
+    return res.json({
+      success: true,
+      duplicate: false,
+      event
+    });
   } catch (error) {
-    console.error('[Admin user status]', error.message);
-    sendJsonError(res, 500, 'Could not update user');
+    console.error('[ingest]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not save spawn event'
+    );
   }
 });
 
-app.get('/api/admin/egg-pet-map', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+// Backward-compatible webhook route.
+app.post('/api/bot-webhook', (req, res, next) => {
+  const suppliedKey =
+    req.get('x-bot-key') ||
+    req.get('x-webhook-secret');
+
+  if (
+    !BOT_INGEST_KEY ||
+    !safeEqual(suppliedKey, BOT_INGEST_KEY)
+  ) {
+    return sendError(res, 401, 'Invalid bot webhook key');
+  }
+
+  req.headers['x-bot-key'] = BOT_INGEST_KEY;
+
+  return next();
+}, async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  const parsed = parseIngest(req.body || {});
+
+  try {
+    const event = await storeSpawn(parsed);
+
+    return res.json({
+      success: true,
+      event
+    });
+  } catch (error) {
+    console.error('[bot-webhook]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not save spawn event'
+    );
+  }
+});
+
+/* =========================================================
+   CURRENT STOCK API
+   V314 can use this same buyer API key.
+========================================================= */
+
+app.get('/api/stocks', requireApiKey, async (_req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT * FROM egg_pet_map ORDER BY tier, egg_name'
+      `SELECT
+         id,
+         tier,
+         egg_name AS eggName,
+         pet_name AS petName,
+         pet_image_url AS petImageUrl,
+         location_name AS location,
+         location_name AS biome,
+         spawned_at AS spawnedAt,
+         spawned_at AS timestamp,
+         expires_at AS expiresAt,
+         source_message_id AS messageId
+       FROM stocks
+       WHERE expires_at IS NULL
+          OR expires_at > CURRENT_TIMESTAMP
+       ORDER BY spawned_at DESC, id DESC
+       LIMIT 250`
     );
-    res.json({ mappings: rows });
+
+    const stocks = rows.map(row => {
+      const spawnedMs = new Date(row.spawnedAt).getTime();
+
+      return {
+        ...row,
+        type: 'SPAWN',
+        eventType: 'spawn',
+        spawned: 'SPAWNED',
+        elapsedSeconds: Number.isFinite(spawnedMs)
+          ? Math.max(
+              0,
+              Math.floor((Date.now() - spawnedMs) / 1000)
+            )
+          : 0
+      };
+    });
+
+    res.set('Cache-Control', 'no-store');
+
+    return res.json({
+      success: true,
+      stocks,
+      currentStocks: stocks,
+      items: stocks,
+      count: stocks.length,
+      lastIngestAt
+    });
   } catch (error) {
-    console.error('[Egg map]', error.message);
-    sendJsonError(res, 500, 'Could not load egg-pet mappings');
+    console.error('[stocks]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not load current stocks'
+    );
   }
 });
 
-app.post('/api/admin/egg-pet-map', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+/* =========================================================
+   SCHEDULE / SPAWN HISTORY COMPATIBILITY
+========================================================= */
 
-  const eggName = String(req.body.eggName || '').trim();
-  const petName = String(req.body.petName || '').trim();
-  const tier = String(req.body.tier || '').trim();
-  const imageUrl = req.body.petImageUrl
-    ? String(req.body.petImageUrl).trim()
-    : null;
-
-  if (!eggName || !petName || !tier ||
-      eggName.length > 191 || petName.length > 191 ||
-      tier.length > 32 || (imageUrl && imageUrl.length > 1024)) {
-    return sendJsonError(res, 400, 'Invalid egg, pet, tier or image URL');
-  }
-
-  try {
-    await pool.execute(
-      `INSERT INTO egg_pet_map (egg_name, pet_name, tier, pet_image_url)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         pet_name = VALUES(pet_name),
-         tier = VALUES(tier),
-         pet_image_url = VALUES(pet_image_url),
-         is_active = 1`,
-      [eggName, petName, tier, imageUrl]
-    );
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('[Save egg map]', error.message);
-    sendJsonError(res, 500, 'Could not save mapping');
-  }
-});
-
-app.get('/api/admin/location-aliases', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+app.get('/api/schedule', requireApiKey, async (_req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT * FROM location_alias ORDER BY alias_name'
+      `SELECT
+         id,
+         tier,
+         egg_name AS eggName,
+         pet_name AS petName,
+         pet_image_url AS petImageUrl,
+         location_name AS location,
+         location_name AS biome,
+         spawned_at AS spawnedAt,
+         spawned_at AS timestamp,
+         source_message_id AS messageId
+       FROM stocks
+       ORDER BY spawned_at DESC, id DESC
+       LIMIT 250`
     );
-    res.json({ aliases: rows });
+
+    const schedules = rows.map(row => {
+      const spawnedMs = new Date(row.timestamp).getTime();
+
+      return {
+        ...row,
+        type: 'SPAWN',
+        eventType: 'spawn',
+        time: row.timestamp,
+        remainingSeconds: 0,
+        elapsedSeconds: Number.isFinite(spawnedMs)
+          ? Math.max(
+              0,
+              Math.floor((Date.now() - spawnedMs) / 1000)
+            )
+          : 0
+      };
+    });
+
+    res.set('Cache-Control', 'no-store');
+
+    return res.json({
+      success: true,
+      schedules,
+      lastIngestAt,
+      webhookReceived: Boolean(lastIngestAt),
+      activeSchedules: schedules.length
+    });
   } catch (error) {
-    console.error('[Aliases]', error.message);
-    sendJsonError(res, 500, 'Could not load aliases');
+    console.error('[schedule]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not load spawn history'
+    );
   }
 });
 
-app.post('/api/admin/location-aliases', requireAdmin, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+/* =========================================================
+   LIVE SSE STREAM
+   GET /events?apiKey=BUYER_KEY
 
-  const alias = String(req.body.aliasName || '').trim();
-  const canonical = String(req.body.canonicalName || '').trim();
+   Same buyer key as /api/stocks.
+   Sends connection event, recent events, and live events.
+========================================================= */
 
-  if (!alias || !canonical || alias.length > 191 ||
-      canonical.length > 191) {
-    return sendJsonError(res, 400, 'Valid alias and canonical name required');
-  }
-
-  try {
-    await pool.execute(
-      `INSERT INTO location_alias (alias_name, canonical_name)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE canonical_name = VALUES(canonical_name)`,
-      [alias, canonical]
-    );
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('[Save alias]', error.message);
-    sendJsonError(res, 500, 'Could not save alias');
-  }
-});
-
-app.post('/api/ingest', requireBot, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
-
-  const body = req.body || {};
-  const messageId = String(body.messageId || '').trim();
-  const eggName = String(body.eggName || '').trim();
-  const tier = String(body.tier || '').trim();
-  const locationInput = String(body.location || '').trim();
-
-  if (!messageId || !eggName || !tier ||
-      messageId.length > 64 || eggName.length > 191 ||
-      tier.length > 32) {
-    return sendJsonError(res, 400, 'messageId, eggName and tier are required');
-  }
-
-  const spawnedAt = parseDate(body.spawnedAt || body.time);
-  if (!spawnedAt) return sendJsonError(res, 400, 'Invalid spawn time');
-
-  const expiresAt = new Date(
-    spawnedAt.getTime() + DEFAULT_TTL_MINUTES * 60 * 1000
-  );
-
-  const connection = await pool.getConnection();
-
-  try {
-    await connection.beginTransaction();
-
-    const [existing] = await connection.execute(
-      'SELECT id FROM processed_messages WHERE message_id = ? LIMIT 1',
-      [messageId]
-    );
-
-    if (existing.length) {
-      await connection.rollback();
-      return res.json({ ok: true, duplicate: true });
-    }
-
-    const [maps] = await connection.execute(
-      `SELECT pet_name, pet_image_url
-       FROM egg_pet_map
-       WHERE egg_name = ? AND is_active = 1 LIMIT 1`,
-      [eggName]
-    );
-
-    let location = locationInput || null;
-    if (location) {
-      const [aliases] = await connection.execute(
-        'SELECT canonical_name FROM location_alias WHERE alias_name = ? LIMIT 1',
-        [location]
-      );
-      if (aliases.length) location = aliases[0].canonical_name;
-    }
-
-    await connection.execute(
-      `INSERT INTO stocks
-       (tier, egg_name, pet_name, pet_image_url, location_name,
-        spawned_at, expires_at, source_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         tier = VALUES(tier),
-         pet_name = VALUES(pet_name),
-         pet_image_url = VALUES(pet_image_url),
-         location_name = VALUES(location_name),
-         spawned_at = VALUES(spawned_at),
-         expires_at = VALUES(expires_at)`,
-      [
-        tier,
-        eggName,
-        maps[0]?.pet_name || body.petName || null,
-        maps[0]?.pet_image_url || body.petImageUrl || null,
-        location,
-        spawnedAt.toISOString().slice(0, 19).replace('T', ' '),
-        expiresAt.toISOString().slice(0, 19).replace('T', ' '),
-        messageId
-      ]
-    );
-
-    await connection.execute(
-      'INSERT INTO processed_messages (message_id) VALUES (?)',
-      [messageId]
-    );
-
-    await connection.commit();
-
-    const event = {
-      type: 'SPAWN',
-      tier,
-      eggName,
-      petName: maps[0]?.pet_name || body.petName || null,
-      petImageUrl: maps[0]?.pet_image_url || body.petImageUrl || null,
-      location,
-      time: spawnedAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      messageId
-    };
-
-    broadcast(event);
-    res.status(201).json({ ok: true, event });
-  } catch (error) {
-    await connection.rollback().catch(() => {});
-    if (error.code === 'ER_DUP_ENTRY') {
-      return res.json({ ok: true, duplicate: true });
-    }
-    console.error('[Ingest]', error.message);
-    sendJsonError(res, 500, 'Could not process spawn event');
-  } finally {
-    connection.release();
-  }
-});
-
-function startSse(req, res) {
-  res.status(200);
-  res.set({
+app.get('/events', requireApiKey, (req, res) => {
+  res.status(200).set({
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
-    'Connection': 'keep-alive',
+    Connection: 'keep-alive',
     'X-Accel-Buffering': 'no'
   });
-  res.flushHeaders?.();
-  res.write('retry: 3000\n\n');
-  res.write(`event: connected\ndata: ${JSON.stringify({
-    ok: true,
-    time: new Date().toISOString()
-  })}\n\n`);
 
-  sseClients.add(res);
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  const clientId = crypto.randomUUID();
+
+  sseClients.set(clientId, res);
+
+  res.write(
+    `event: connected\ndata: ${JSON.stringify({
+      connected: true,
+      timestamp: new Date().toISOString()
+    })}\n\n`
+  );
+
+  // Replay recent in-memory events after a client connects.
+  if (recentEvents.length) {
+    for (const event of [...recentEvents].reverse()) {
+      const spawnedMs = new Date(event.spawnedAt).getTime();
+
+      res.write(
+        `data: ${JSON.stringify({
+          ...event,
+          type: 'SPAWN',
+          eventType: 'spawn',
+          timestamp: event.spawnedAt,
+          time: event.spawnedAt,
+          elapsedSeconds: Number.isFinite(spawnedMs)
+            ? Math.max(
+                0,
+                Math.floor((Date.now() - spawnedMs) / 1000)
+              )
+            : 0
+        })}\n\n`
+      );
+    }
+  }
 
   const heartbeat = setInterval(() => {
     try {
-      res.write(`: heartbeat ${Date.now()}\n\n`);
-    } catch {
+      res.write(': heartbeat\n\n');
+    } catch (_) {
       clearInterval(heartbeat);
-      sseClients.delete(res);
+      sseClients.delete(clientId);
     }
-  }, 25000);
+  }, 20000);
 
   req.on('close', () => {
     clearInterval(heartbeat);
-    sseClients.delete(res);
+    sseClients.delete(clientId);
   });
-}
+});
 
-app.get('/events', requireApiKey, startSse);
+/* =========================================================
+   BUYER LOGIN AND API KEY GENERATION
+========================================================= */
 
-app.get('/overlay/events', requireOverlay, startSse);
+app.post('/api/buyer/login', async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
 
-app.get('/api/overlay/stocks', requireOverlay, async (req, res) => {
-  if (!pool) return sendJsonError(res, 503, 'Database unavailable');
+  const email = str(
+    req.body?.email || req.body?.username
+  ).toLowerCase();
+
+  const password = str(req.body?.password);
+
+  if (!email || !password) {
+    return sendError(
+      res,
+      400,
+      'Email and password are required'
+    );
+  }
 
   try {
     const [rows] = await pool.execute(
-      `SELECT tier, egg_name AS eggName, pet_name AS petName,
-              pet_image_url AS petImageUrl, location_name AS location,
-              spawned_at AS spawnedAt, expires_at AS expiresAt
-       FROM stocks
-       WHERE expires_at > UTC_TIMESTAMP()
-       ORDER BY spawned_at DESC LIMIT 5`
+      `SELECT id, email, password_hash, is_active
+       FROM users
+       WHERE LOWER(email) = ?
+       LIMIT 1`,
+      [email]
     );
-    res.json({ stocks: rows });
-  } catch (error) {
-    console.error('[Overlay stocks]', error.message);
-    sendJsonError(res, 500, 'Could not load overlay stocks');
-  }
-});
 
-app.use('/dashboard', express.static(path.join(__dirname, 'public')));
-app.use('/public', express.static(path.join(__dirname, 'public')));
+    if (
+      !rows.length ||
+      !rows[0].is_active ||
+      !(await bcrypt.compare(
+        password,
+        rows[0].password_hash
+      ))
+    ) {
+      return sendError(
+        res,
+        401,
+        'Invalid email or password'
+      );
+    }
 
-app.get('/', (req, res) => {
-  res.json({
-    service: 'steal-egg-saas-backend',
-    status: 'running',
-    health: '/health'
-  });
-});
+    const ttl = process.env.USER_SESSION_TTL
+      ? Number(process.env.USER_SESSION_TTL)
+      : '30m';
 
-app.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  if (err.type === 'entity.parse.failed') {
-    return sendJsonError(res, 400, 'Invalid JSON body');
-  }
-  if (err.message === 'Origin not allowed by CORS') {
-    return sendJsonError(res, 403, err.message);
-  }
-  console.error('[Server error]', err.message);
-  sendJsonError(res, 500, 'Internal server error');
-});
+    const token = signToken({
+      role: 'buyer',
+      userId: rows[0].id,
+      email: rows[0].email
+    }, ttl);
 
-async function main() {
-  await initDatabase();
-
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Server] Listening on port ${PORT}`);
-  });
-
-  server.keepAliveTimeout = 65000;
-  server.headersTimeout = 66000;
-
-  function shutdown(signal) {
-    console.log(`[Server] ${signal} received; shutting down`);
-    for (const client of sseClients) client.end();
-    server.close(async () => {
-      if (pool) await pool.end().catch(() => {});
-      process.exit(0);
+    return res.json({
+      success: true,
+      token,
+      email: rows[0].email
     });
-    setTimeout(() => process.exit(1), 10000).unref();
+  } catch (error) {
+    console.error('[buyer login]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Buyer login failed'
+    );
+  }
+});
+
+app.post('/api/buyer/generate-key', async (req, res) => {
+  if (!needDb(res)) {
+    return;
   }
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  const session = verifySession(req, 'buyer');
+
+  if (!session?.userId) {
+    return sendError(res, 401, 'Buyer login required');
+  }
+
+  try {
+    const [oldKeys] = await pool.execute(
+      `SELECT id
+       FROM api_keys
+       WHERE user_id = ?
+         AND is_active = 1
+         AND (
+           expires_at IS NULL
+           OR expires_at > CURRENT_TIMESTAMP
+         )
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [session.userId]
+    );
+
+    if (oldKeys.length) {
+      return sendError(
+        res,
+        409,
+        'An active API key already exists. Use the existing key or explicitly rotate it.'
+      );
+    }
+
+    const rawKey =
+      'sk_live_' + crypto.randomBytes(24).toString('hex');
+
+    const expiresDays = Math.max(
+      1,
+      Number(process.env.API_KEY_TTL_DAYS || 90)
+    );
+
+    await pool.execute(
+      `INSERT INTO api_keys (
+         user_id,
+         key_hash,
+         key_prefix,
+         is_active,
+         expires_at,
+         created_at
+       )
+       VALUES (
+         ?,
+         ?,
+         ?,
+         1,
+         DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? DAY),
+         CURRENT_TIMESTAMP
+       )`,
+      [
+        session.userId,
+        sha256(rawKey),
+        rawKey.slice(0, 16),
+        expiresDays
+      ]
+    );
+
+    return res.json({
+      success: true,
+      apiKey: rawKey,
+      reused: false,
+      expiresInDays: expiresDays
+    });
+  } catch (error) {
+    console.error('[generate key]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not generate API key'
+    );
+  }
+});
+
+app.post('/api/buyer/rotate-key', async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  const session = verifySession(req, 'buyer');
+
+  if (!session?.userId) {
+    return sendError(res, 401, 'Buyer login required');
+  }
+
+  try {
+    await pool.execute(
+      'UPDATE api_keys SET is_active = 0 WHERE user_id = ? AND is_active = 1',
+      [session.userId]
+    );
+
+    const rawKey =
+      'sk_live_' + crypto.randomBytes(24).toString('hex');
+
+    const expiresDays = Math.max(
+      1,
+      Number(process.env.API_KEY_TTL_DAYS || 90)
+    );
+
+    await pool.execute(
+      `INSERT INTO api_keys (
+         user_id,
+         key_hash,
+         key_prefix,
+         is_active,
+         expires_at,
+         created_at
+       )
+       VALUES (
+         ?,
+         ?,
+         ?,
+         1,
+         DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? DAY),
+         CURRENT_TIMESTAMP
+       )`,
+      [
+        session.userId,
+        sha256(rawKey),
+        rawKey.slice(0, 16),
+        expiresDays
+      ]
+    );
+
+    return res.json({
+      success: true,
+      apiKey: rawKey,
+      rotated: true,
+      expiresInDays: expiresDays
+    });
+  } catch (error) {
+    console.error('[rotate key]', error.message || error);
+
+    return sendError(
+      res,
+      500,
+      'Could not rotate API key'
+    );
+  }
+});
+
+/* =========================================================
+   ADMIN / MASTER LOGIN
+========================================================= */
+
+app.post('/api/admin/login', (req, res) => {
+  if (!ADMIN_PASSWORD || !JWT_SECRET) {
+    return sendError(
+      res,
+      503,
+      'ADMIN_PASSWORD and JWT_SECRET must be configured'
+    );
+  }
+
+  if (
+    !safeEqual(str(req.body?.username), ADMIN_USERNAME) ||
+    !safeEqual(str(req.body?.password), ADMIN_PASSWORD)
+  ) {
+    return sendError(
+      res,
+      401,
+      'Invalid admin credentials'
+    );
+  }
+
+  return res.json({
+    success: true,
+    token: signToken({ role: 'admin' }, '12h')
+  });
+});
+
+function requireAdmin(req, res, next) {
+  const session = verifySession(req, 'admin');
+
+  if (!session) {
+    return sendError(res, 401, 'Admin login required');
+  }
+
+  req.admin = session;
+
+  return next();
 }
 
-main().catch(error => {
-  console.error('[Startup]', error);
-  process.exit(1);
+app.post('/api/admin/users', requireAdmin, async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  const email = str(req.body?.email).toLowerCase();
+  const password = str(req.body?.password);
+
+  if (
+    !/^\S+@\S+\.\S+$/.test(email) ||
+    password.length < 8
+  ) {
+    return sendError(
+      res,
+      400,
+      'Valid email and password of at least 8 characters are required'
+    );
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    await pool.execute(
+      `INSERT INTO users (
+         email,
+         password_hash,
+         is_active,
+         created_at,
+         updated_at
+       )
+       VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [email, passwordHash]
+    );
+
+    return res.json({
+      success: true,
+      email
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error.code === 'ER_DUP_ENTRY' ? 409 : 500,
+      error.code === 'ER_DUP_ENTRY'
+        ? 'Email already exists'
+        : 'Could not create buyer'
+    );
+  }
 });
+
+app.get('/api/admin/users', requireAdmin, async (_req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      `SELECT
+         u.id,
+         u.email,
+         u.created_at,
+         COUNT(k.id) AS key_count
+       FROM users u
+       LEFT JOIN api_keys k
+         ON k.user_id = u.id
+        AND k.is_active = 1
+       GROUP BY u.id, u.email, u.created_at
+       ORDER BY u.created_at DESC
+       LIMIT 500`
+    );
+
+    return res.json({
+      success: true,
+      users: rows
+    });
+  } catch (_) {
+    return sendError(res, 500, 'Could not list buyers');
+  }
+});
+
+app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  const egg = str(req.body?.eggName);
+  const pet = str(req.body?.petName);
+  const image = str(req.body?.petImageUrl) || null;
+  const tier = normalizeTier(req.body?.tier);
+
+  if (!egg || !pet) {
+    return sendError(
+      res,
+      400,
+      'eggName and petName are required'
+    );
+  }
+
+  try {
+    await pool.execute(
+      `INSERT INTO egg_pet_map (
+         egg_name,
+         pet_name,
+         pet_image_url,
+         tier,
+         is_active,
+         created_at,
+         updated_at
+       )
+       VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON DUPLICATE KEY UPDATE
+         pet_name = VALUES(pet_name),
+         pet_image_url = VALUES(pet_image_url),
+         tier = VALUES(tier),
+         is_active = 1,
+         updated_at = CURRENT_TIMESTAMP`,
+      [egg, pet, image, tier]
+    );
+
+    return res.json({ success: true });
+  } catch (_) {
+    return sendError(
+      res,
+      500,
+      'Could not save egg/pet mapping'
+    );
+  }
+});
+
+/* =========================================================
+   LEGACY MASTER ROUTE ALIASES
+========================================================= */
+
+app.post('/api/master/login', (req, res) => {
+  if (!ADMIN_PASSWORD || !JWT_SECRET) {
+    return sendError(
+      res,
+      503,
+      'ADMIN_PASSWORD and JWT_SECRET must be configured'
+    );
+  }
+
+  const suppliedUser = str(
+    req.body?.username ||
+    req.body?.email ||
+    ADMIN_USERNAME
+  );
+
+  if (
+    !safeEqual(suppliedUser, ADMIN_USERNAME) ||
+    !safeEqual(str(req.body?.password), ADMIN_PASSWORD)
+  ) {
+    return sendError(
+      res,
+      401,
+      'Invalid master credentials'
+    );
+  }
+
+  return res.json({
+    success: true,
+    token: signToken({ role: 'admin' }, '12h')
+  });
+});
+
+app.get('/api/master/users', requireAdmin, async (_req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      `SELECT
+         u.id,
+         u.email AS username,
+         u.email,
+         u.created_at AS createdAt,
+         COUNT(k.id) AS key_count,
+         MAX(k.is_active) AS hasApiKey
+       FROM users u
+       LEFT JOIN api_keys k ON k.user_id = u.id
+       GROUP BY u.id, u.email, u.created_at
+       ORDER BY u.created_at DESC
+       LIMIT 500`
+    );
+
+    return res.json({
+      success: true,
+      users: rows.map(row => ({
+        ...row,
+        hasApiKey: Boolean(row.hasApiKey)
+      }))
+    });
+  } catch (_) {
+    return sendError(res, 500, 'Could not list buyers');
+  }
+});
+
+app.post('/api/master/add-user', requireAdmin, async (req, res) => {
+  if (!needDb(res)) {
+    return;
+  }
+
+  const email = str(
+    req.body?.email || req.body?.username
+  ).toLowerCase();
+
+  const password = str(req.body?.password);
+
+  if (
+    !/^\S+@\S+\.\S+$/.test(email) ||
+    password.length < 8
+  ) {
+    return sendError(
+      res,
+      400,
+      'Valid buyer email and password of at least 8 characters are required'
+    );
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    await pool.execute(
+      `INSERT INTO users (
+         email,
+         password_hash,
+         is_active,
+         created_at,
+         updated_at
+       )
+       VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [email, passwordHash]
+    );
+
+    return res.json({
+      success: true,
+      username: email,
+      email
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error.code === 'ER_DUP_ENTRY' ? 409 : 500,
+      error.code === 'ER_DUP_ENTRY'
+        ? 'Email already exists'
+        : 'Could not create buyer'
+    );
+  }
+});
+
+/* =========================================================
+   PAGE ROUTES
+========================================================= */
+
+app.get('/get-key', (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, 'public', 'get-key.html'),
+    error => {
+      if (error && !res.headersSent) {
+        res.status(404).type('text').send(
+          'Create public/get-key.html or use the buyer login API.'
+        );
+      }
+    }
+  );
+});
+
+app.get('/generator', (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, 'public', 'get-key.html'),
+    error => {
+      if (error && !res.headersSent) {
+        res.status(404).type('text').send(
+          'Create public/get-key.html or use the buyer login API.'
+        );
+      }
+    }
+  );
+});
+
+app.get('/admin', (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, 'public', 'admin.html'),
+    error => {
+      if (error && !res.headersSent) {
+        res.status(404).type('text').send(
+          'Create public/admin.html or use the admin login API.'
+        );
+      }
+    }
+  );
+});
+
+app.get('/master', (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, 'public', 'admin.html'),
+    error => {
+      if (error && !res.headersSent) {
+        res.status(404).type('text').send(
+          'Create public/admin.html or use the admin login API.'
+        );
+      }
+    }
+  );
+});
+
+app.get('/overlay', (req, res) => {
+  const expectedToken = str(process.env.OVERLAY_TOKEN);
+
+  if (
+    expectedToken &&
+    !safeEqual(str(req.query.token), expectedToken)
+  ) {
+    return res.status(403).type('text').send(
+      'Invalid overlay token'
+    );
+  }
+
+  return res.sendFile(
+    path.join(__dirname, 'public', 'overlay.html'),
+    error => {
+      if (error && !res.headersSent) {
+        res.status(404).type('text').send(
+          'Create public/overlay.html.'
+        );
+      }
+    }
+  );
+});
+
+/* =========================================================
+   FINAL ERROR HANDLER AND SERVER START
+========================================================= */
+
+app.use((error, _req, res, _next) => {
+  console.error('[request error]', error.message || error);
+
+  if (!res.headersSent) {
+    sendError(res, 500, 'Internal server error');
+  }
+});
+
+(async () => {
+  await initDb();
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(
+      `[backend] listening on ${PORT}; ` +
+      `databaseConnected=${dbStatus.connected}; ` +
+      dbStatus.message
+    );
+
+    if (!BOT_INGEST_KEY) {
+      console.warn(
+        '[config] BOT_INGEST_KEY missing: bot ingest is disabled.'
+      );
+    }
+
+    if (!ADMIN_PASSWORD) {
+      console.warn(
+        '[config] ADMIN_PASSWORD missing: admin login is disabled.'
+      );
+    }
+  });
+})();
