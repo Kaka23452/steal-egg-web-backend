@@ -1,0 +1,360 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Backend README — Steal An Egg</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #a1aec2;
+      --blue: #79adff;
+      --green: #55d6a0;
+      --gold: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.7 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1050px; margin: auto; }
+    h1 { font-size: 28px; line-height: 1.3; margin: 0; }
+    h2 { font-size: 19px; margin: 0 0 12px; }
+    h3 { font-size: 14px; margin: 17px 0 7px; }
+    p { color: var(--muted); margin: 8px 0; }
+    li { margin: 5px 0; }
+
+    header { margin-bottom: 20px; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .notice {
+      padding: 12px;
+      border-left: 3px solid var(--gold);
+      border-radius: 5px;
+      background: #19170f;
+    }
+
+    .safe {
+      padding: 12px;
+      border-left: 3px solid var(--green);
+      border-radius: 5px;
+      background: #0d1b18;
+    }
+
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    code {
+      color: #bcd5ff;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      padding: 13px;
+      background: #080c12;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
+
+    .route {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .route:last-child { border-bottom: 0; }
+
+    .route strong { display: block; }
+    .muted { color: var(--muted); }
+
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .panel { padding: 14px; }
+      h1 { font-size: 23px; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="badge">PROJECT DOCUMENTATION</span>
+    <h1>Steal An Egg — Backend README</h1>
+    <p>Setup overview, existing API routes, buyer access and troubleshooting.</p>
+  </header>
+
+  <section class="panel">
+    <h2>1. Project Purpose</h2>
+    <p>
+      This backend is intended to provide stock and schedule data to the
+      Steal An Egg frontend and OBS overlay. It also supports buyer API key
+      authentication and the configured spawn-data ingestion workflow.
+    </p>
+    <div class="notice">
+      <strong>Verification status:</strong> This document describes the
+      project's specified architecture. It does not mean that the deployed
+      backend, database, Discord integration, or every frontend connection
+      has been tested successfully.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. Project Files</h2>
+    <p>The current 14-file preparation workflow includes these known paths:</p>
+    <pre>backend/
+├── package.json
+├── .env.example
+├── schema.sql
+├── index.js
+├── patch_mshost_spawn.js
+└── public/
+    ├── get-key.html
+    ├── admin.html
+    ├── stock-data.html
+    ├── diagnostics.html
+    ├── spawn-events.html
+    ├── api-key-guide.html
+    ├── connection-test.html
+    └── README.html</pre>
+    <p>
+      This tree lists the files identified in the current workflow. It is not
+      a verified listing of every file in the deployed repository.
+    </p>
+    <p>
+      <strong>Important:</strong> The compatibility of
+      <code>patch_mshost_spawn.js</code> with the current
+      <code>index.js</code> must be reviewed before running the patch.
+      Do not run an unverified patch blindly.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>3. Existing API Routes</h2>
+
+    <div class="route">
+      <strong><code>GET /health</code></strong>
+      <p>General backend health information.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>GET /health/database</code></strong>
+      <p>Database health information.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>GET /api/stocks</code></strong>
+      <p>Read stock data. Buyer API key authentication is expected where configured.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>GET /api/schedule</code></strong>
+      <p>Read schedule data. Buyer API key authentication is expected where configured.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>GET /events</code></strong>
+      <p>Existing Server-Sent Events (SSE) stream for supported events.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/ingest</code></strong>
+      <p>
+        Existing bot-ingestion route. The specified design uses a separate
+        <code>BOT_INGEST_KEY</code>; it is not the buyer API key.
+      </p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/buyer/login</code></strong>
+      <p>Buyer login workflow.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/buyer/generate-key</code></strong>
+      <p>Buyer API key generation workflow.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/buyer/rotate-key</code></strong>
+      <p>Buyer API key rotation workflow.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/admin/login</code></strong>
+      <p>Admin login workflow.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>GET /api/admin/users</code> and <code>POST /api/admin/users</code></strong>
+      <p>Admin buyer-account listing and creation workflows.</p>
+    </div>
+
+    <div class="route">
+      <strong><code>POST /api/admin/egg-map</code></strong>
+      <p>Admin egg-to-pet mapping workflow.</p>
+    </div>
+
+    <p class="muted">
+      Additional legacy routes may exist in the specified backend. Check the
+      actual FILE 4 source before relying on any route not listed here.
+      This README does not create or register routes.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>4. Buyer API Key Authentication</h2>
+    <p>
+      The specified buyer API uses the <code>X-API-Key</code> request header
+      for protected data endpoints.
+    </p>
+    <pre>GET /api/stocks
+X-API-Key: YOUR_BUYER_API_KEY
+Accept: application/json</pre>
+    <p>
+      The existing SSE integration may accept an API key through the
+      <code>apiKey</code> query parameter where implemented.
+    </p>
+    <div class="notice">
+      Never paste a real buyer key into public HTML, screenshots, source
+      control, or public chat. A query-string key can also appear in logs
+      and browser history.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>5. Environment and Database</h2>
+    <p>
+      Environment variable names must match the implementation and hosting
+      configuration. The specified design includes database connection
+      settings, admin credentials and a separate bot-ingestion secret.
+    </p>
+    <ul>
+      <li>Use the provided <code>.env.example</code> as a reference, not as a file containing production secrets.</li>
+      <li>Set real secrets in the hosting provider's environment-variable settings.</li>
+      <li>Do not expose database passwords, bot tokens, admin passwords or ingestion secrets to the browser.</li>
+      <li>Confirm the database driver and connection-variable format match the current <code>index.js</code>.</li>
+    </ul>
+    <p>
+      A configured <code>TIDB_DATABASE_URL</code> does not, by itself, prove
+      that the application actually reads that variable correctly. Database
+      connectivity must be checked against the current backend code and
+      deployment logs.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>6. Discord Spawn Data Flow</h2>
+    <ol>
+      <li>The configured bot or webhook receives a supported spawn notification.</li>
+      <li>The backend ingestion route validates its configured authentication.</li>
+      <li>The backend stores or processes the event according to its implementation.</li>
+      <li>The frontend reads stock and schedule data or connects to the existing SSE stream.</li>
+    </ol>
+    <p>
+      This is the intended architecture, not proof that every step currently
+      succeeds. Do not assume every schedule record is a confirmed spawn event.
+      The frontend should distinguish actual received spawn alerts from
+      predicted timers.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>7. Troubleshooting Checklist</h2>
+
+    <h3>Backend unavailable</h3>
+    <ul>
+      <li>Check the configured deployment URL.</li>
+      <li>Review the hosting provider's application logs.</li>
+      <li>Inspect the response from <code>/health</code>.</li>
+    </ul>
+
+    <h3>Database disconnected</h3>
+    <ul>
+      <li>Check the configured database URL or required database variables.</li>
+      <li>Verify database credentials and network access.</li>
+      <li>Review the actual database initialization error in server logs.</li>
+    </ul>
+
+    <h3>Buyer key rejected</h3>
+    <ul>
+      <li>Verify the key belongs to the intended buyer account.</li>
+      <li>Check key expiry, rotation and endpoint authorization.</li>
+      <li>Confirm the request sends the header expected by the backend.</li>
+    </ul>
+
+    <h3>Spawn events missing</h3>
+    <ul>
+      <li>Verify the bot or webhook can reach the existing ingestion route.</li>
+      <li>Check the ingestion secret configuration without exposing its value.</li>
+      <li>Review the actual event payload and server logs.</li>
+      <li>Check SSE reconnection behavior and the browser's network panel.</li>
+    </ul>
+
+    <h3>Browser connection or CORS errors</h3>
+    <ul>
+      <li>Check the frontend origin against the deployed CORS configuration.</li>
+      <li>Check whether the required request headers are allowed.</li>
+      <li>Remember that browser restrictions can block a request even when the server is running.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>8. Safe Review Order</h2>
+    <ol>
+      <li>Save all 14 project files.</li>
+      <li>Review file paths and compatibility with the current backend source.</li>
+      <li>Check route names, authentication headers, response fields and database configuration.</li>
+      <li>Review any patch script before executing it.</li>
+      <li>Only then perform controlled tests and deployment verification.</li>
+    </ol>
+    <div class="safe">
+      This page is documentation only. It makes no backend requests and does
+      not modify application or database data.
+    </div>
+  </section>
+
+  <footer class="panel">
+    <h2>Compatibility Disclaimer</h2>
+    <p>
+      This README is based on the project's specified routes and file plan.
+      The current source files and deployed service have not been verified
+      together during the save-first phase. Treat route availability, database
+      compatibility, authentication behavior and live spawn delivery as
+      unverified until the later review and tests are completed.
+    </p>
+  </footer>
+</div>
+</body>
+</html>
+```
