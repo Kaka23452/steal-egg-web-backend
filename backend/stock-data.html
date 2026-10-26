@@ -1,0 +1,582 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Steal An Egg — Stock Data</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --blue: #69a7ff;
+      --green: #42d69a;
+      --red: #ff8585;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      color: var(--text);
+      background: var(--bg);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { max-width: 1250px; margin: auto; }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    h1 { margin: 0; font-size: 25px; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    p { color: var(--muted); }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 17px;
+      margin-bottom: 15px;
+      min-width: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: block;
+      margin: 8px 0 5px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    input, select {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: #0b111b;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px;
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: #182233;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 13px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button:disabled { opacity: .55; cursor: wait; }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      background: #0b111b;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-top: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .status.ok { border-color: #287a5b; }
+    .status.error { border-color: #884343; color: #ffc0c0; }
+
+    .muted { color: var(--muted); }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      min-width: 0;
+      padding: 12px;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 20px;
+      overflow-wrap: anywhere;
+    }
+
+    .stat span { color: var(--muted); font-size: 12px; }
+
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
+
+    th { color: var(--muted); }
+
+    .tier {
+      display: inline-block;
+      padding: 3px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 11px;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 360px;
+      overflow: auto;
+      background: #0b111b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+    }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 800px) {
+      body { padding: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Stock & Spawn Data</h1>
+      <p>Read-only viewer for the existing Steal An Egg backend endpoints.</p>
+    </div>
+    <div class="actions">
+      <button type="button" id="refreshBtn">Refresh Data</button>
+      <button type="button" id="clearBtn">Clear View</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>Backend Connection</h2>
+    <p class="muted">
+      This page uses the current website origin. Enter a buyer API key that is
+      authorized for both data endpoints. The key is kept only in this page's
+      memory and is not saved to browser storage.
+    </p>
+
+    <label for="apiKey">Buyer API key</label>
+    <input id="apiKey" type="password" autocomplete="off"
+           placeholder="sk_live_…" spellcheck="false">
+
+    <div class="actions">
+      <button class="primary" type="button" id="loadBtn">Load Stock & Schedule</button>
+      <button type="button" id="toggleKeyBtn">Show Key</button>
+    </div>
+
+    <div id="status" class="status" role="status" aria-live="polite">
+      Enter your buyer API key to load data.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Overview</h2>
+    <div class="stats">
+      <div class="stat">
+        <strong id="stockTotal">—</strong>
+        <span>Stock records received</span>
+      </div>
+      <div class="stat">
+        <strong id="scheduleTotal">—</strong>
+        <span>Schedule records received</span>
+      </div>
+      <div class="stat">
+        <strong id="lastIngest">—</strong>
+        <span>Last ingest timestamp</span>
+      </div>
+      <div class="stat">
+        <strong id="lastLoaded">—</strong>
+        <span>Last successful load</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Stock Filters</h2>
+    <div class="grid">
+      <div>
+        <label for="search">Search egg, pet, tier or location</label>
+        <input id="search" type="search" placeholder="Search stock records…">
+      </div>
+      <div>
+        <label for="tierFilter">Tier</label>
+        <select id="tierFilter">
+          <option value="">All tiers</option>
+          <option value="Secret">Secret</option>
+          <option value="Divine">Divine</option>
+          <option value="Eternal">Eternal</option>
+          <option value="Mythic">Mythic</option>
+          <option value="Legendary">Legendary</option>
+          <option value="Other">Other / unspecified</option>
+        </select>
+      </div>
+    </div>
+    <p id="filterSummary" class="muted">No stock data loaded.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>Egg</th>
+            <th>Pet</th>
+            <th>Location</th>
+            <th>Spawned At</th>
+            <th>Expires At</th>
+          </tr>
+        </thead>
+        <tbody id="stocksBody">
+          <tr><td colspan="6" class="muted">No stock data loaded.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Spawn Schedule</h2>
+    <p class="muted">
+      Displays the response returned by the existing <code>/api/schedule</code>
+      endpoint. It does not create or modify schedules.
+    </p>
+    <pre id="scheduleOutput">No schedule data loaded.</pre>
+  </section>
+
+  <section class="panel">
+    <h2>Raw API Responses</h2>
+    <p class="muted">Useful for diagnosing field names and API response shape.</p>
+    <h3>GET /api/stocks</h3>
+    <pre id="stocksRaw">Not requested.</pre>
+    <h3>GET /api/schedule</h3>
+    <pre id="scheduleRaw">Not requested.</pre>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  let stockRecords = [];
+  let scheduleRecords = [];
+  let stockLoaded = false;
+  let scheduleLoaded = false;
+
+  function setStatus(message, type = "") {
+    const el = $("status");
+    el.textContent = message;
+    el.className = "status" + (type ? " " + type : "");
+  }
+
+  function setBusy(busy) {
+    $("loadBtn").disabled = busy;
+    $("refreshBtn").disabled = busy;
+    $("loadBtn").textContent = busy ? "Loading…" : "Load Stock & Schedule";
+  }
+
+  function getError(data, status) {
+    return data?.message || data?.error || ("HTTP " + status);
+  }
+
+  async function apiGet(path, key) {
+    const response = await fetch(path, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        "X-API-Key": key
+      },
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error"
+    });
+
+    const raw = await response.text();
+    let data;
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error("Expected JSON from " + path + ", but received a non-JSON response.");
+    }
+
+    if (!response.ok) {
+      throw new Error(getError(data, response.status) + " (" + path + ")");
+    }
+
+    if (data && data.success === false) {
+      throw new Error(getError(data, "API error") + " (" + path + ")");
+    }
+
+    return data;
+  }
+
+  function pickArray(data, names) {
+    for (const name of names) {
+      if (Array.isArray(data?.[name])) return data[name];
+    }
+    return Array.isArray(data) ? data : [];
+  }
+
+  function valueOf(record, names) {
+    for (const name of names) {
+      const value = record?.[name];
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString();
+  }
+
+  function makeCell(row, value) {
+    const cell = document.createElement("td");
+    cell.textContent = value === undefined || value === null || value === ""
+      ? "—" : String(value);
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function renderStocks() {
+    const tbody = $("stocksBody");
+    tbody.replaceChildren();
+
+    const search = $("search").value.trim().toLowerCase();
+    const selectedTier = $("tierFilter").value;
+
+    const filtered = stockRecords.filter((record) => {
+      const tier = String(valueOf(record, ["tier", "rarity"]));
+      const egg = String(valueOf(record, ["eggName", "egg_name", "egg"]));
+      const pet = String(valueOf(record, ["petName", "pet_name", "pet"]));
+      const location = String(valueOf(record, [
+        "locationName", "location_name", "location", "biome"
+      ]));
+
+      const haystack = [tier, egg, pet, location].join(" ").toLowerCase();
+      const matchesSearch = !search || haystack.includes(search);
+
+      let matchesTier = true;
+      if (selectedTier === "Other") {
+        matchesTier = !["secret", "divine", "eternal", "mythic", "legendary"]
+          .includes(tier.toLowerCase());
+      } else if (selectedTier) {
+        matchesTier = tier.toLowerCase() === selectedTier.toLowerCase();
+      }
+
+      return matchesSearch && matchesTier;
+    });
+
+    $("filterSummary").textContent = stockLoaded
+      ? "Showing " + filtered.length + " of " + stockRecords.length + " returned records."
+      : "No stock data loaded.";
+
+    if (!filtered.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "muted";
+      cell.textContent = stockLoaded
+        ? "No records match the current filters."
+        : "No stock data loaded.";
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const record of filtered) {
+      const row = document.createElement("tr");
+      const tier = valueOf(record, ["tier", "rarity"]);
+      const tierCell = makeCell(row, tier || "Unspecified");
+
+      if (tier) {
+        const badge = document.createElement("span");
+        badge.className = "tier";
+        badge.textContent = String(tier);
+        tierCell.replaceChildren(badge);
+      }
+
+      makeCell(row, valueOf(record, ["eggName", "egg_name", "egg"]));
+      makeCell(row, valueOf(record, ["petName", "pet_name", "pet"]));
+      makeCell(row, valueOf(record, [
+        "locationName", "location_name", "location", "biome"
+      ]));
+      makeCell(row, formatDate(valueOf(record, [
+        "spawnedAt", "spawned_at", "spawnTime", "spawn_time", "time"
+      ])));
+      makeCell(row, formatDate(valueOf(record, [
+        "expiresAt", "expires_at", "expiry", "expires"
+      ])));
+
+      tbody.appendChild(row);
+    }
+  }
+
+  function renderSchedule() {
+    $("scheduleOutput").textContent = scheduleLoaded
+      ? JSON.stringify(scheduleRecords, null, 2)
+      : "No schedule data loaded.";
+  }
+
+  async function loadAll() {
+    const key = $("apiKey").value.trim();
+
+    if (!key) {
+      setStatus("Enter a buyer API key first.", "error");
+      $("apiKey").focus();
+      return;
+    }
+
+    setBusy(true);
+    setStatus("Requesting stock and schedule data…");
+
+    let stockError = "";
+    let scheduleError = "";
+
+    try {
+      try {
+        const data = await apiGet("/api/stocks", key);
+        stockRecords = pickArray(data, [
+          "stocks", "currentStocks", "items", "data"
+        ]);
+        stockLoaded = true;
+        $("stocksRaw").textContent = JSON.stringify(data, null, 2);
+        $("stockTotal").textContent = String(
+          Number.isFinite(data.count) ? data.count : stockRecords.length
+        );
+        $("lastIngest").textContent = formatDate(
+          valueOf(data, ["lastIngestAt", "last_ingest_at"])
+        );
+        renderStocks();
+      } catch (error) {
+        stockError = error.message;
+        $("stocksRaw").textContent = "Request failed: " + error.message;
+      }
+
+      try {
+        const data = await apiGet("/api/schedule", key);
+        scheduleRecords = pickArray(data, [
+          "schedules", "schedule", "items", "data"
+        ]);
+        scheduleLoaded = true;
+        $("scheduleRaw").textContent = JSON.stringify(data, null, 2);
+        $("scheduleTotal").textContent = String(scheduleRecords.length);
+        renderSchedule();
+      } catch (error) {
+        scheduleError = error.message;
+        $("scheduleRaw").textContent = "Request failed: " + error.message;
+      }
+
+      if (!stockError && !scheduleError) {
+        $("lastLoaded").textContent = new Date().toLocaleTimeString();
+        setStatus("Both endpoints responded successfully.", "ok");
+      } else if (!stockError || !scheduleError) {
+        $("lastLoaded").textContent = new Date().toLocaleTimeString();
+        setStatus(
+          "Partial result. Stock: " + (stockError || "OK") +
+          " | Schedule: " + (scheduleError || "OK"),
+          "error"
+        );
+      } else {
+        setStatus(
+          "Both requests failed. Stock: " + stockError +
+          " | Schedule: " + scheduleError,
+          "error"
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  $("loadBtn").addEventListener("click", loadAll);
+  $("refreshBtn").addEventListener("click", loadAll);
+  $("search").addEventListener("input", renderStocks);
+  $("tierFilter").addEventListener("change", renderStocks);
+
+  $("toggleKeyBtn").addEventListener("click", () => {
+    const input = $("apiKey");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("toggleKeyBtn").textContent = show ? "Hide Key" : "Show Key";
+  });
+
+  $("clearBtn").addEventListener("click", () => {
+    stockRecords = [];
+    scheduleRecords = [];
+    stockLoaded = false;
+    scheduleLoaded = false;
+
+    $("apiKey").value = "";
+    $("stockTotal").textContent = "—";
+    $("scheduleTotal").textContent = "—";
+    $("lastIngest").textContent = "—";
+    $("lastLoaded").textContent = "—";
+    $("stocksRaw").textContent = "Not requested.";
+    $("scheduleRaw").textContent = "Not requested.";
+    $("scheduleOutput").textContent = "No schedule data loaded.";
+    $("search").value = "";
+    $("tierFilter").value = "";
+    renderStocks();
+    setStatus("View cleared. No backend records were modified.");
+  })();
+
+  renderStocks();
+})();
+</script>
+</body>
+</html>
+```
