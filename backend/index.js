@@ -149,11 +149,17 @@ function createDatabasePool() {
   if (databaseUrl) {
     const uri = new URL(databaseUrl);
 
-    const sslEnabled =
-      uri.searchParams.get('ssl') === 'true' ||
-      uri.searchParams.get('ssl-mode') === 'REQUIRED' ||
-      uri.searchParams.get('ssl-mode') === 'VERIFY_IDENTITY' ||
-      process.env.DB_SSL === 'true';
+    const usingTidbUrl =
+  Boolean(process.env.TIDB_DATABASE_URL) &&
+  databaseUrl === process.env.TIDB_DATABASE_URL;
+
+const sslEnabled =
+  usingTidbUrl ||
+  uri.searchParams.get('ssl') === 'true' ||
+  uri.searchParams.get('ssl-mode') === 'REQUIRED' ||
+  uri.searchParams.get('ssl-mode') === 'VERIFY_IDENTITY' ||
+  process.env.DB_SSL === 'true' ||
+  process.env.TIDB_ENABLE_SSL === 'true';
 
     return mysql.createPool({
       host: uri.hostname,
