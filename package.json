@@ -3,14 +3,10 @@
   "name": "steal-egg-saas-backend",
   "version": "1.0.3",
   "private": true,
-  "description": "Steal An Egg SaaS backend with buyer API keys and Discord spawn events",
   "main": "backend/index.js",
   "scripts": {
-  "start": "node backend/index.js",
-  "check": "node --check backend/index.js"
-}
-
-
+    "start": "node backend/index.js",
+    "check": "node --check backend/index.js"
   },
   "engines": {
     "node": ">=20"
@@ -24,4 +20,3 @@
     "mysql2": "^3.12.0"
   }
 }
-
