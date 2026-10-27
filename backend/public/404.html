@@ -1,0 +1,116 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#080d18">
+<title>404 — Page Not Found | Steal An Egg</title>
+<style>
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --bg: #080d18;
+  --panel: #111a2b;
+  --border: #293850;
+  --text: #eff5ff;
+  --muted: #9aabc5;
+  --accent: #72edb8;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 24px 16px;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(ellipse at 15% 0%, #193354 0, transparent 40%),
+    var(--bg);
+  color: var(--text);
+}
+main {
+  width: min(100%, 500px);
+  padding: 34px 28px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(160deg, #141f33, #0e1727);
+  text-align: center;
+  box-shadow: 0 28px 90px #0006;
+}
+.brand {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 18px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #a0ffd7, #4bdca4);
+  color: #062319;
+  font-size: 24px;
+  font-weight: 900;
+}
+.code {
+  margin: 0;
+  color: var(--accent);
+  font-size: clamp(60px, 14vw, 86px);
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -.06em;
+}
+h1 { margin: 17px 0 10px; font-size: 24px; }
+p { color: var(--muted); font-size: 14px; line-height: 1.7; }
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 24px;
+}
+a {
+  display: block;
+  padding: 12px 10px;
+  border: 1px solid #354662;
+  border-radius: 10px;
+  color: var(--text);
+  background: #1c2a40;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 800;
+}
+a.primary {
+  border-color: transparent;
+  background: linear-gradient(110deg, #a0ffd7, #62e8b1);
+  color: #062219;
+}
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+footer { margin-top: 23px; color: #7788a2; font-size: 11px; }
+@media (max-width: 380px) {
+  main { padding: 28px 19px; }
+  .actions { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand" aria-hidden="true">S</div>
+  <p class="code">404</p>
+  <h1>Page not found</h1>
+  <p>
+    This page may have moved, or the address may be incorrect.
+    Check the URL or return to the Steal An Egg portal.
+  </p>
+
+  <nav class="actions" aria-label="Navigation">
+    <a class="primary" href="/">Back to Home</a>
+    <a href="/get-key">Buyer Portal</a>
+  </nav>
+
+  <footer>Steal An Egg · Buyer Access Portal</footer>
+</main>
+</body>
+</html>
+```
