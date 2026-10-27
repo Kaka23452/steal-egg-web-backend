@@ -1,6 +1,9 @@
--- FILE 3/14: backend/schema.sql
--- Steal Egg SaaS — MySQL / ITDB Cloud
--- Run this SQL inside your selected application database.
+**Path: `backend/schema.sql`**
+
+```sql
+-- FILE 1/2: backend/schema.sql
+-- Steal Egg SaaS — MySQL / TiDB
+-- Safe to run repeatedly; does not drop existing tables.
 
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -16,7 +19,6 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
-
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -38,7 +40,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
-
 CREATE TABLE IF NOT EXISTS egg_pet_map (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     egg_name VARCHAR(191) NOT NULL,
@@ -56,7 +57,6 @@ CREATE TABLE IF NOT EXISTS egg_pet_map (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
-
 CREATE TABLE IF NOT EXISTS location_alias (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     alias_name VARCHAR(191) NOT NULL,
@@ -70,7 +70,6 @@ CREATE TABLE IF NOT EXISTS location_alias (
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
-
 
 CREATE TABLE IF NOT EXISTS stocks (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -94,7 +93,6 @@ CREATE TABLE IF NOT EXISTS stocks (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
-
 CREATE TABLE IF NOT EXISTS processed_messages (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     message_id VARCHAR(64) NOT NULL,
@@ -105,3 +103,5 @@ CREATE TABLE IF NOT EXISTS processed_messages (
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
+```
+
