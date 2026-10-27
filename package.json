@@ -1,4 +1,4 @@
-```json
+
 {
   "name": "steal-egg-saas-backend",
   "version": "1.0.3",
@@ -21,4 +21,4 @@
     "mysql2": "^3.12.0"
   }
 }
-```
+
