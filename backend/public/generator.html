@@ -1,0 +1,571 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Steal An Egg — API Key Generator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #121925;
+      --panel2: #182233;
+      --line: #2b374b;
+      --text: #edf3ff;
+      --muted: #9cabc2;
+      --accent: #69a7ff;
+      --green: #42d69a;
+      --red: #ff7777;
+      --yellow: #ffd477;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px 14px;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse at top, #172746 0, transparent 55%),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.55 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .wrap { width: 100%; max-width: 560px; }
+
+    .brand {
+      text-align: center;
+      margin-bottom: 22px;
+    }
+
+    .brand-icon {
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 12px;
+      border-radius: 16px;
+      background: #1b3152;
+      border: 1px solid #36557f;
+      font-size: 27px;
+    }
+
+    h1 { font-size: 25px; margin: 0; }
+    h2 { font-size: 18px; margin: 0 0 8px; }
+    p { color: var(--muted); }
+
+    .sub { margin: 6px 0 0; }
+
+    .panel {
+      padding: 22px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      box-shadow: 0 18px 60px #0004;
+    }
+
+    label {
+      display: block;
+      margin: 13px 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    input {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      padding: 11px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #0b111b;
+      color: var(--text);
+      font: inherit;
+    }
+
+    input:focus {
+      outline: 2px solid #69a7ff66;
+      border-color: var(--accent);
+    }
+
+    button {
+      cursor: pointer;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel2);
+      color: var(--text);
+      font: inherit;
+      font-weight: 650;
+    }
+
+    button.primary {
+      background: #235bb4;
+      border-color: #3978d7;
+    }
+
+    button.danger {
+      border-color: #704040;
+      color: #ffc0c0;
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: wait;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 16px;
+    }
+
+    .actions button { flex: 1; }
+
+    .status {
+      padding: 11px 12px;
+      margin: 14px 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b111b;
+      overflow-wrap: anywhere;
+    }
+
+    .status.ok { border-color: #287a5b; }
+    .status.error { border-color: #884343; color: #ffc0c0; }
+    .status.warn { border-color: #80652e; color: var(--yellow); }
+
+    .hidden { display: none !important; }
+
+    .key-box {
+      margin-top: 18px;
+      padding: 15px;
+      border: 1px solid #287a5b;
+      border-radius: 10px;
+      background: #0d1c1a;
+    }
+
+    .key-box label { margin-top: 0; }
+
+    .key-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .key-row input {
+      flex: 1;
+      min-width: 0;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    .key-row button { flex-shrink: 0; }
+
+    .warning {
+      font-size: 12px;
+      color: var(--yellow);
+      margin-bottom: 0;
+    }
+
+    .info {
+      margin-top: 15px;
+      padding: 12px;
+      border-radius: 9px;
+      background: #0b111b;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 18px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 440px) {
+      .panel { padding: 16px; }
+      .key-row { flex-direction: column; }
+      .key-row button { width: 100%; }
+      .actions { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="brand">
+      <div class="brand-icon" aria-hidden="true">🥚</div>
+      <h1>Steal An Egg</h1>
+      <p class="sub">Buyer Portal · API Key Generator</p>
+    </header>
+
+    <main class="panel">
+      <section id="loginSection">
+        <h2>Buyer Login</h2>
+        <p>Sign in with the buyer account provided by your administrator.</p>
+
+        <form id="loginForm">
+          <label for="email">Email address</label>
+          <input
+            id="email"
+            name="email"
+            type="email"
+            autocomplete="username"
+            maxlength="254"
+            required
+          >
+
+          <label for="password">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            maxlength="128"
+            required
+          >
+
+          <div class="actions">
+            <button id="loginBtn" class="primary" type="submit">
+              Sign In
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section id="accountSection" class="hidden">
+        <h2>Your API Key</h2>
+        <p id="accountEmail"></p>
+        <p>Generate a key for your authorized dashboard or application.</p>
+
+        <div id="accountStatus" class="status hidden" role="status"
+             aria-live="polite"></div>
+
+        <div class="actions">
+          <button id="generateBtn" class="primary" type="button">
+            Generate API Key
+          </button>
+          <button id="rotateBtn" type="button">
+            Rotate API Key
+          </button>
+        </div>
+
+        <div id="keyBox" class="key-box hidden">
+          <label for="apiKey">API key</label>
+          <div class="key-row">
+            <input id="apiKey" type="password" readonly
+                   autocomplete="off" spellcheck="false">
+            <button id="toggleKeyBtn" type="button">Show</button>
+            <button id="copyKeyBtn" type="button">Copy</button>
+          </div>
+          <p class="warning">
+            Treat this key like a password. Anyone who obtains it may be
+            able to access the API according to its permissions.
+          </p>
+        </div>
+
+        <div class="info">
+          Your login session is kept in page memory. Refreshing or closing
+          this page signs you out. Store your API key securely; the server
+          may not display the complete key again.
+        </div>
+
+        <div class="actions">
+          <button id="logoutBtn" class="danger" type="button">
+            Sign Out
+          </button>
+        </div>
+      </section>
+
+      <div id="globalStatus" class="status" role="status"
+           aria-live="polite">Connecting to backend…</div>
+    </main>
+
+    <footer>Authorized access only · Keep your credentials private</footer>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  let sessionToken = "";
+  let buyerEmail = "";
+  let currentKey = "";
+
+  function showStatus(id, message, kind = "") {
+    const el = $(id);
+    el.textContent = message;
+    el.className = "status" + (kind ? " " + kind : "");
+    el.classList.remove("hidden");
+  }
+
+  function hideStatus(id) {
+    $(id).classList.add("hidden");
+  }
+
+  function setBusy(id, busy, text) {
+    const button = $(id);
+    if (busy) {
+      button.dataset.originalText = button.textContent;
+      button.textContent = text;
+      button.disabled = true;
+    } else {
+      button.textContent =
+        button.dataset.originalText || button.textContent;
+      button.disabled = false;
+    }
+  }
+
+  async function request(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("Accept", "application/json");
+
+    if (options.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    if (options.auth && sessionToken) {
+      headers.set("Authorization", "Bearer " + sessionToken);
+    }
+
+    let response;
+
+    try {
+      response = await fetch(path, {
+        ...options,
+        headers,
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "error"
+      });
+    } catch {
+      throw new Error(
+        "Could not reach the backend. Check the server URL and deployment status."
+      );
+    }
+
+    const raw = await response.text();
+    let data;
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = { message: raw || "The server returned an invalid response." };
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data.message ||
+        data.error ||
+        "Request failed (HTTP " + response.status + ")."
+      );
+    }
+
+    if (data.success === false) {
+      throw new Error(data.message || data.error || "Request failed.");
+    }
+
+    return data;
+  }
+
+  function extractToken(data) {
+    return data.token || data.accessToken || data.access_token || "";
+  }
+
+  function extractApiKey(data) {
+    return data.apiKey ||
+      data.api_key ||
+      data.key ||
+      data.plaintextKey ||
+      data.plaintext_key ||
+      "";
+  }
+
+  function setLoggedIn(loggedIn) {
+    $("loginSection").classList.toggle("hidden", loggedIn);
+    $("accountSection").classList.toggle("hidden", !loggedIn);
+  }
+
+  function clearSession() {
+    sessionToken = "";
+    buyerEmail = "";
+    currentKey = "";
+
+    $("password").value = "";
+    $("apiKey").value = "";
+    $("apiKey").type = "password";
+    $("toggleKeyBtn").textContent = "Show";
+    $("keyBox").classList.add("hidden");
+    $("accountEmail").textContent = "";
+
+    setLoggedIn(false);
+  }
+
+  async function login(event) {
+    event.preventDefault();
+    hideStatus("globalStatus");
+    setBusy("loginBtn", true, "Signing in…");
+
+    try {
+      const email = $("email").value.trim();
+      const password = $("password").value;
+
+      const data = await request("/api/buyer/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+
+      const token = extractToken(data);
+
+      if (!token) {
+        throw new Error(
+          "Login response has no session token. Verify the /api/buyer/login response in backend/index.js."
+        );
+      }
+
+      sessionToken = token;
+      buyerEmail = email;
+
+      $("password").value = "";
+      $("accountEmail").textContent = "Signed in as " + buyerEmail;
+
+      setLoggedIn(true);
+      showStatus("globalStatus", "Login successful.", "ok");
+      showStatus(
+        "accountStatus",
+        "Signed in. You can generate or rotate your API key.",
+        "ok"
+      );
+    } catch (error) {
+      clearSession();
+      showStatus("globalStatus", error.message, "error");
+    } finally {
+      setBusy("loginBtn", false);
+    }
+  }
+
+  async function createKey(rotate) {
+    const buttonId = rotate ? "rotateBtn" : "generateBtn";
+    setBusy(buttonId, true, rotate ? "Rotating…" : "Generating…");
+
+    try {
+      if (!sessionToken) {
+        throw new Error("Your session has expired. Please sign in again.");
+      }
+
+      if (rotate) {
+        const confirmed = window.confirm(
+          "Rotate the API key? Your previous key may stop working immediately."
+        );
+
+        if (!confirmed) return;
+      }
+
+      const endpoint = rotate
+        ? "/api/buyer/rotate-key"
+        : "/api/buyer/generate-key";
+
+      const data = await request(endpoint, {
+        method: "POST",
+        auth: true,
+        body: JSON.stringify({})
+      });
+
+      const key = extractApiKey(data);
+
+      if (!key) {
+        throw new Error(
+          "The server did not return a complete API key. Check the endpoint response format."
+        );
+      }
+
+      currentKey = key;
+      $("apiKey").value = currentKey;
+      $("apiKey").type = "password";
+      $("toggleKeyBtn").textContent = "Show";
+      $("keyBox").classList.remove("hidden");
+
+      showStatus(
+        "accountStatus",
+        rotate
+          ? "API key rotated successfully. Update any application using the old key."
+          : "API key generated successfully. Copy and store it securely.",
+        "ok"
+      );
+    } catch (error) {
+      showStatus("accountStatus", error.message, "error");
+    } finally {
+      setBusy(buttonId, false);
+    }
+  }
+
+  $("loginForm").addEventListener("submit", login);
+
+  $("generateBtn").addEventListener("click", () => {
+    createKey(false);
+  });
+
+  $("rotateBtn").addEventListener("click", () => {
+    createKey(true);
+  });
+
+  $("toggleKeyBtn").addEventListener("click", () => {
+    const input = $("apiKey");
+    const showing = input.type === "text";
+
+    input.type = showing ? "password" : "text";
+    $("toggleKeyBtn").textContent = showing ? "Show" : "Hide";
+  });
+
+  $("copyKeyBtn").addEventListener("click", async () => {
+    if (!currentKey) {
+      showStatus("accountStatus", "No API key is available to copy.", "warn");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(currentKey);
+      showStatus("accountStatus", "API key copied to clipboard.", "ok");
+    } catch {
+      showStatus(
+        "accountStatus",
+        "Clipboard access failed. Use Show, then copy the key manually.",
+        "warn"
+      );
+    }
+  });
+
+  $("logoutBtn").addEventListener("click", () => {
+    clearSession();
+    $("email").value = "";
+    showStatus("globalStatus", "You have signed out.", "ok");
+  });
+
+  async function checkBackend() {
+    try {
+      const data = await request("/health");
+      showStatus(
+        "globalStatus",
+        data.status === "ok" || data.ok === true
+          ? "Backend is responding."
+          : "Backend responded. You can sign in.",
+        "ok"
+      );
+    } catch (error) {
+      showStatus("globalStatus", error.message, "error");
+    }
+  }
+
+  checkBackend();
+})();
+</script>
+</body>
+</html>
