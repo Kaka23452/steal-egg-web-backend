@@ -1,0 +1,162 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#080d18">
+<title>Steal An Egg | Backend Portal</title>
+<style>
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --bg: #080d18;
+  --panel: #111a2b;
+  --border: #293850;
+  --text: #eff5ff;
+  --muted: #9aabc5;
+  --accent: #72edb8;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 24px 16px;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  background:
+    radial-gradient(ellipse at 15% 0%, #193354 0, transparent 40%),
+    var(--bg);
+}
+main { width: min(100%, 720px); }
+header { text-align: center; margin-bottom: 24px; }
+.brand {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #a0ffd7, #4bdca4);
+  color: #062319;
+  font-size: 25px;
+  font-weight: 900;
+}
+h1 { margin: 14px 0 8px; font-size: 30px; }
+p { color: var(--muted); line-height: 1.65; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.card {
+  padding: 21px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(160deg, #141f33, #0e1727);
+}
+.card h2 { margin: 0 0 8px; font-size: 17px; }
+.card p { margin: 0; font-size: 13px; }
+a.button {
+  display: block;
+  margin-top: 17px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: linear-gradient(110deg, #a0ffd7, #62e8b1);
+  color: #062219;
+  text-decoration: none;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+}
+a.secondary {
+  border: 1px solid #354662;
+  background: #1c2a40;
+  color: var(--text);
+}
+.status {
+  margin-top: 16px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+footer { margin-top: 20px; text-align: center; font-size: 11px; color: #7788a2; }
+@media (max-width: 540px) {
+  .cards { grid-template-columns: 1fr; }
+  .card { padding: 18px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand" aria-hidden="true">S</div>
+    <h1>Steal An Egg</h1>
+    <p>Backend access portal</p>
+  </header>
+
+  <section class="cards" aria-label="Portal navigation">
+    <article class="card">
+      <h2>Buyer Portal</h2>
+      <p>Sign in with your buyer email and password to access your API key.</p>
+      <a class="button" href="/get-key">Open Buyer Portal →</a>
+    </article>
+
+    <article class="card">
+      <h2>Buyer Login</h2>
+      <p>Go to the buyer sign-in page if you need to authenticate first.</p>
+      <a class="button secondary" href="/login">Buyer Sign In</a>
+    </article>
+
+    <article class="card">
+      <h2>API Key Generator</h2>
+      <p>Open the generator page to manage buyer API-key access.</p>
+      <a class="button secondary" href="/generator">Open Generator</a>
+    </article>
+
+    <article class="card">
+      <h2>Backend Status</h2>
+      <p>Check whether the backend health endpoint is responding.</p>
+      <a class="button secondary" href="/health" target="_blank" rel="noopener noreferrer">Check Health</a>
+    </article>
+  </section>
+
+  <div class="status" id="status" role="status" aria-live="polite">
+    Portal loaded. Backend health has not been checked yet.
+  </div>
+
+  <footer>Steal An Egg · Keep your buyer credentials and API key private.</footer>
+</main>
+
+<script>
+(async () => {
+  const status = document.getElementById('status');
+
+  try {
+    const response = await fetch('/health', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      credentials: 'same-origin'
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(`Health check returned HTTP ${response.status}`);
+    }
+
+    status.textContent = data
+      ? 'Backend health endpoint responded. Check its response for database and service status.'
+      : 'Backend responded, but did not return JSON.';
+  } catch (error) {
+    status.textContent = 'Could not check backend health: ' + error.message;
+  }
+})();
+</script>
+</body>
+</html>
+```
