@@ -1,6 +1,4 @@
-**File: `backend/index.js`**
 
-```js
 'use strict';
 
 /*
@@ -1287,5 +1285,5 @@ module.exports = {
   app,
   publishSpawn
 };
-```
+
 
