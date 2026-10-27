@@ -1,0 +1,156 @@
+**File: `backend/public/500.html`**
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d14">
+  <title>Server Error | Steal An Egg</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d14;
+      --panel: #141824;
+      --border: #292f40;
+      --text: #f4f6ff;
+      --muted: #a4acc0;
+      --accent: #8b7cff;
+      --danger: #ff6b81;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(
+          circle at 50% 0%,
+          #25204a 0,
+          transparent 42%
+        ),
+        var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    .panel {
+      width: 100%;
+      max-width: 520px;
+      padding: 36px 28px;
+      text-align: center;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: 0 24px 80px #0006;
+    }
+
+    .code {
+      margin: 0;
+      color: var(--danger);
+      font-size: clamp(64px, 15vw, 100px);
+      line-height: 1;
+      font-weight: 850;
+      letter-spacing: -5px;
+    }
+
+    h1 {
+      margin: 22px 0 12px;
+      font-size: 25px;
+    }
+
+    p {
+      margin: 0 auto;
+      max-width: 390px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    a, button {
+      min-height: 44px;
+      padding: 12px 18px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: inherit;
+      font-weight: 650;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .primary {
+      color: white;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .secondary {
+      color: var(--text);
+      background: #1b2030;
+    }
+
+    .brand {
+      margin-top: 28px;
+      font-size: 12px;
+      color: #788198;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+
+    a:focus-visible, button:focus-visible {
+      outline: 2px solid white;
+      outline-offset: 3px;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="panel">
+    <div class="code">500</div>
+
+    <h1>Something went wrong</h1>
+
+    <p>
+      The server encountered an unexpected problem while processing
+      your request. Please try again in a moment.
+    </p>
+
+    <div class="actions">
+      <button class="primary" id="retryButton" type="button">
+        Try Again
+      </button>
+
+      <a class="secondary" href="/">Back to Home</a>
+    </div>
+
+    <div class="brand">Steal An Egg · Backend</div>
+  </main>
+
+  <script>
+    document
+      .getElementById('retryButton')
+      .addEventListener('click', function () {
+        window.location.reload();
+      });
+  </script>
+</body>
+</html>
+```
+
