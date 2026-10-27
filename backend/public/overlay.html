@@ -1,0 +1,375 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#080d18">
+  <title>Steal An Egg — Overlay Connection</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #080d18;
+      color: #eff5ff;
+      --panel: #111a2b;
+      --border: #293850;
+      --muted: #9aabc5;
+      --accent: #72edb8;
+      --danger: #ff969d;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse at 10% 0%, #193354 0, transparent 40%),
+        #080d18;
+    }
+
+    main { width: min(100%, 760px); margin: 0 auto; }
+
+    h1 { margin: 0 0 8px; font-size: 25px; }
+    p { color: var(--muted); line-height: 1.65; }
+
+    .card {
+      margin-top: 18px;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    label {
+      display: block;
+      margin: 16px 0 7px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    input {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      padding: 11px 12px;
+      border: 1px solid #354661;
+      border-radius: 9px;
+      background: #09111f;
+      color: #eff5ff;
+      font: inherit;
+    }
+
+    button {
+      min-height: 43px;
+      margin-top: 14px;
+      padding: 10px 15px;
+      border: 0;
+      border-radius: 9px;
+      background: linear-gradient(110deg, #a0ffd7, #62e8b1);
+      color: #062219;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: .6; cursor: wait; }
+
+    .status {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      overflow-wrap: anywhere;
+    }
+
+    .status[data-kind="success"] { color: var(--accent); }
+    .status[data-kind="error"] { color: var(--danger); }
+
+    .event {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .event:last-child { border-bottom: 0; }
+    .event strong { display: block; }
+    .event small { color: var(--muted); }
+    .muted { color: var(--muted); font-size: 12px; }
+
+    #dashboard { display: none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Steal An Egg — Overlay Connection</h1>
+  <p>Connect this page to your backend to inspect incoming spawn events.</p>
+
+  <section class="card" id="connectPanel">
+    <h2>Backend settings</h2>
+
+    <label for="apiBase">Backend URL</label>
+    <input id="apiBase" type="url"
+      placeholder="https://your-backend.example.com"
+      autocomplete="url" spellcheck="false">
+
+    <label for="apiKey">Buyer API key</label>
+    <input id="apiKey" type="password"
+      placeholder="Paste your buyer API key"
+      autocomplete="off" spellcheck="false">
+
+    <button id="connectButton" type="button">Connect</button>
+
+    <p class="muted">
+      Do not enter a Discord bot token or database password here.
+      Use only your buyer API key.
+    </p>
+    <div class="status" id="status" data-kind="info" role="status"
+      aria-live="polite">Not connected.</div>
+  </section>
+
+  <section class="card" id="dashboard">
+    <h2>Spawn event monitor</h2>
+    <p id="connectionState">Waiting for events…</p>
+    <div id="events">
+      <p>No spawn events received yet.</p>
+    </div>
+    <button id="disconnectButton" type="button">Disconnect</button>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+
+  let eventSource = null;
+  let connected = false;
+  let apiKey = '';
+  let baseUrl = '';
+  let reconnectTimer = null;
+  let retryCount = 0;
+
+  const MAX_EVENTS = 50;
+  const seenEvents = new Set();
+
+  function status(message, kind = 'info') {
+    $('status').textContent = message;
+    $('status').dataset.kind = kind;
+  }
+
+  function cleanBaseUrl(value) {
+    const url = new URL(value);
+
+    if (url.protocol !== 'https:' && url.hostname !== 'localhost' &&
+        url.hostname !== '127.0.0.1') {
+      throw new Error('Use HTTPS for the backend URL.');
+    }
+
+    if (url.username || url.password) {
+      throw new Error('Do not include credentials in the backend URL.');
+    }
+
+    return url.origin;
+  }
+
+  function closeStream() {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function disconnect(message = 'Disconnected.') {
+    connected = false;
+    closeStream();
+    apiKey = '';
+    retryCount = 0;
+
+    $('dashboard').style.display = 'none';
+    $('connectPanel').style.display = 'block';
+    $('connectionState').textContent = 'Disconnected.';
+    status(message);
+  }
+
+  function formatTime(value) {
+    if (!value) return 'Time unavailable';
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    return date.toLocaleString();
+  }
+
+  function addEvent(data) {
+    if (!data || typeof data !== 'object') return;
+
+    const type = String(data.type || '').toUpperCase();
+    if (type && type !== 'SPAWN') return;
+
+    const tier = String(data.tier || 'Unknown');
+    const name = String(data.eggName || data.name || 'Unknown spawn');
+    const time = data.time || data.timestamp || Date.now();
+
+    const id = String(
+      data.eventId || data.messageId ||
+      `${tier}:${name}:${time}`
+    );
+
+    if (seenEvents.has(id)) return;
+    seenEvents.add(id);
+
+    const empty = $('events').querySelector('p');
+    if (empty && $('events').children.length === 1) {
+      $('events').replaceChildren();
+    }
+
+    const item = document.createElement('div');
+    item.className = 'event';
+
+    const title = document.createElement('strong');
+    title.textContent = `${tier} — ${name}`;
+
+    const timeLabel = document.createElement('small');
+    timeLabel.textContent = formatTime(time);
+
+    item.append(title, timeLabel);
+    $('events').prepend(item);
+
+    while ($('events').children.length > MAX_EVENTS) {
+      $('events').lastElementChild.remove();
+    }
+
+    while (seenEvents.size > 500) {
+      seenEvents.delete(seenEvents.values().next().value);
+    }
+  }
+
+  function scheduleReconnect() {
+    if (!connected || reconnectTimer) return;
+
+    const delay = Math.min(30000, 1000 * (2 ** retryCount));
+    retryCount = Math.min(retryCount + 1, 5);
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      openStream();
+    }, delay);
+  }
+
+  function openStream() {
+    if (!connected) return;
+
+    closeStream();
+
+    /*
+      This draft assumes the backend accepts:
+      GET /events?apiKey=<buyer API key>
+
+      Verify the actual authentication contract in backend/index.js.
+      EventSource cannot set an Authorization header.
+    */
+    const url = new URL('/events', baseUrl);
+    url.searchParams.set('apiKey', apiKey);
+
+    try {
+      eventSource = new EventSource(url.toString());
+
+      eventSource.onopen = () => {
+        retryCount = 0;
+        $('connectionState').textContent = 'Live connection active.';
+        status('Connected. Listening for spawn events.', 'success');
+      };
+
+      eventSource.onmessage = event => {
+        try {
+          addEvent(JSON.parse(event.data));
+        } catch {
+          // Ignore malformed event payloads.
+        }
+      };
+
+      eventSource.onerror = () => {
+        if (!connected) return;
+
+        $('connectionState').textContent =
+          'Connection interrupted. Reconnecting…';
+        status('Stream interrupted; reconnecting automatically.', 'info');
+
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+
+        scheduleReconnect();
+      };
+    } catch {
+      scheduleReconnect();
+    }
+  }
+
+  $('connectButton').addEventListener('click', async () => {
+    if (connected) return;
+
+    const button = $('connectButton');
+    button.disabled = true;
+
+    try {
+      baseUrl = cleanBaseUrl($('apiBase').value.trim());
+      apiKey = $('apiKey').value.trim();
+
+      if (!apiKey) {
+        throw new Error('Enter your buyer API key.');
+      }
+
+      /*
+        This health check verifies reachability only.
+        It does NOT prove that the API key is valid.
+      */
+      const response = await fetch(`${baseUrl}/health`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        mode: 'cors',
+        credentials: 'omit'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend health check failed (HTTP ${response.status}).`);
+      }
+
+      connected = true;
+      $('connectPanel').style.display = 'none';
+      $('dashboard').style.display = 'block';
+      $('connectionState').textContent = 'Opening event stream…';
+      status('Backend reachable. Opening event stream…', 'success');
+      openStream();
+    } catch (error) {
+      apiKey = '';
+      status(error.message || 'Could not connect.', 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $('disconnectButton').addEventListener('click', () => {
+    disconnect();
+  });
+
+  window.addEventListener('pagehide', () => {
+    connected = false;
+    closeStream();
+    apiKey = '';
+  });
+})();
+</script>
+</body>
+</html>
+```
