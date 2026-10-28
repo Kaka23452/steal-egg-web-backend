@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -313,13 +312,19 @@
 
   function setBusy(id, busy, text) {
     const button = $(id);
+
     if (busy) {
       button.dataset.originalText = button.textContent;
-      button.textContent = text;
+
+      if (text) {
+        button.textContent = text;
+      }
+
       button.disabled = true;
     } else {
       button.textContent =
         button.dataset.originalText || button.textContent;
+
       button.disabled = false;
     }
   }
@@ -358,19 +363,27 @@
     try {
       data = raw ? JSON.parse(raw) : {};
     } catch {
-      data = { message: raw || "The server returned an invalid response." };
+      data = {
+        message: raw || "The server returned an invalid response."
+      };
     }
 
     if (!response.ok) {
-      throw new Error(
+      const error = new Error(
         data.message ||
         data.error ||
         "Request failed (HTTP " + response.status + ")."
       );
+
+      error.status = response.status;
+      error.responseData = data;
+      throw error;
     }
 
     if (data.success === false) {
-      throw new Error(data.message || data.error || "Request failed.");
+      throw new Error(
+        data.message || data.error || "Request failed."
+      );
     }
 
     return data;
@@ -406,11 +419,13 @@
     $("keyBox").classList.add("hidden");
     $("accountEmail").textContent = "";
 
+    hideStatus("accountStatus");
     setLoggedIn(false);
   }
 
   async function login(event) {
     event.preventDefault();
+
     hideStatus("globalStatus");
     setBusy("loginBtn", true, "Signing in…");
 
@@ -438,7 +453,9 @@
       $("accountEmail").textContent = "Signed in as " + buyerEmail;
 
       setLoggedIn(true);
+
       showStatus("globalStatus", "Login successful.", "ok");
+
       showStatus(
         "accountStatus",
         "Signed in. You can generate or rotate your API key.",
@@ -454,11 +471,18 @@
 
   async function createKey(rotate) {
     const buttonId = rotate ? "rotateBtn" : "generateBtn";
-    setBusy(buttonId, true, rotate ? "Rotating…" : "Generating…");
+
+    setBusy(
+      buttonId,
+      true,
+      rotate ? "Rotating…" : "Generating…"
+    );
 
     try {
       if (!sessionToken) {
-        throw new Error("Your session has expired. Please sign in again.");
+        throw new Error(
+          "Your session has expired. Please sign in again."
+        );
       }
 
       if (rotate) {
@@ -466,7 +490,9 @@
           "Rotate the API key? Your previous key may stop working immediately."
         );
 
-        if (!confirmed) return;
+        if (!confirmed) {
+          return;
+        }
       }
 
       const endpoint = rotate
@@ -501,7 +527,34 @@
         "ok"
       );
     } catch (error) {
-      showStatus("accountStatus", error.message, "error");
+      if (error.status === 401) {
+        clearSession();
+
+        showStatus(
+          "globalStatus",
+          "Your login session expired. Please sign in again.",
+          "error"
+        );
+
+        return;
+      }
+
+      if (!rotate && error.status === 409) {
+        showStatus(
+          "accountStatus",
+          "An active API key already exists for this account. Use Rotate API Key to create a replacement.",
+          "warn"
+        );
+
+        $("rotateBtn").focus();
+        return;
+      }
+
+      showStatus(
+        "accountStatus",
+        error.message || "API key request failed.",
+        "error"
+      );
     } finally {
       setBusy(buttonId, false);
     }
@@ -527,13 +580,23 @@
 
   $("copyKeyBtn").addEventListener("click", async () => {
     if (!currentKey) {
-      showStatus("accountStatus", "No API key is available to copy.", "warn");
+      showStatus(
+        "accountStatus",
+        "No API key is available to copy.",
+        "warn"
+      );
+
       return;
     }
 
     try {
       await navigator.clipboard.writeText(currentKey);
-      showStatus("accountStatus", "API key copied to clipboard.", "ok");
+
+      showStatus(
+        "accountStatus",
+        "API key copied to clipboard.",
+        "ok"
+      );
     } catch {
       showStatus(
         "accountStatus",
@@ -546,12 +609,18 @@
   $("logoutBtn").addEventListener("click", () => {
     clearSession();
     $("email").value = "";
-    showStatus("globalStatus", "You have signed out.", "ok");
+
+    showStatus(
+      "globalStatus",
+      "You have signed out.",
+      "ok"
+    );
   });
 
   async function checkBackend() {
     try {
       const data = await request("/health");
+
       showStatus(
         "globalStatus",
         data.status === "ok" || data.ok === true
@@ -560,7 +629,11 @@
         "ok"
       );
     } catch (error) {
-      showStatus("globalStatus", error.message, "error");
+      showStatus(
+        "globalStatus",
+        error.message,
+        "error"
+      );
     }
   }
 
