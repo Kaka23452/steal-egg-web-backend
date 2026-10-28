@@ -593,11 +593,17 @@ app.post(
   async (req, res) => {
     if (!needDb(res)) return;
 
-    const connection = await pool.getConnection();
+    let connection;
 
     try {
+      connection = await pool.getConnection();
       await connection.beginTransaction();
 
+      const key = createApiKey();
+      const keyHash = hashApiKey(key);
+      const prefix = key.slice(0, 12);
+
+      // Deactivate existing keys only inside this transaction.
       await connection.execute(
         `UPDATE api_keys
          SET is_active = 0
@@ -605,14 +611,16 @@ app.post(
         [Number(req.buyer.id)]
       );
 
-      const key = createApiKey();
-      const keyHash = hashApiKey(key);
-      const prefix = key.slice(0, 12);
-
+      // expires_at is NOT NULL in the existing database schema.
       await connection.execute(
         `INSERT INTO api_keys
-          (user_id, key_hash, key_prefix, is_active, created_at)
-         VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)`,
+          (user_id, key_hash, key_prefix, is_active,
+           expires_at, created_at)
+         VALUES (
+           ?, ?, ?, 1,
+           DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY),
+           UTC_TIMESTAMP()
+         )`,
         [Number(req.buyer.id), keyHash, prefix]
       );
 
@@ -626,14 +634,22 @@ app.post(
         message: 'API key rotated. Save the new key securely.'
       });
     } catch (error) {
-      await connection.rollback();
+      if (connection) {
+        try {
+          await connection.rollback();
+        } catch (rollbackError) {
+          console.error('[Rotate API key rollback]', rollbackError.message);
+        }
+      }
+
       console.error('[Rotate API key]', error.message);
       return sendError(res, 500, 'Could not rotate API key');
     } finally {
-      connection.release();
+      if (connection) connection.release();
     }
   }
 );
+
 
 /* -------------------- ADMIN: LIST BUYERS -------------------- */
 
