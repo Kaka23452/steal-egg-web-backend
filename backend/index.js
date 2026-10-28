@@ -567,10 +567,9 @@ app.post(
 
       await pool.execute(
         `INSERT INTO api_keys
-          (user_id, key_hash, key_prefix, is_active, created_at)
-         VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)`,
-        [Number(req.buyer.id), keyHash, prefix]
-      );
+  (user_id, key_hash, key_prefix, is_active, expires_at, created_at)
+ VALUES (?, ?, ?, 1, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY), CURRENT_TIMESTAMP)`,
+[Number(req.buyer.id), keyHash, prefix]
 
       return res.status(201).json({
         success: true,
