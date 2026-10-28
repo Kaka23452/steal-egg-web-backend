@@ -974,8 +974,8 @@ app.use(express.static(PUBLIC_DIR, {
 
 const pageRoutes = {
   '/': 'index.html',
-  '/login': 'login.html',
-  '/get-key': 'get-key.html',
+  '/login': 'generator.html',
+  '/get-key': 'generator.html',
   '/generator': 'generator.html',
   '/master': 'master.html',
   '/admin': 'admin.html'
