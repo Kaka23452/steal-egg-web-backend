@@ -986,7 +986,19 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
 
 /* -------------------- DISCORD WEBHOOK -------------------- */
 
-app.post('/api/bot-webhook', async (req, res) => {
+// GET diagnostic: opening this URL in a browser should confirm
+// that the route exists. Actual Discord events must use POST.
+app.get('/api/bot-webhook', (req, res) => {
+  return res.status(200).json({
+    success: true,
+    endpoint: '/api/bot-webhook',
+    methodRequired: 'POST',
+    message: 'Webhook route is available.'
+  });
+});
+
+// POST: receives spawn alerts from the Discord bot.
+app.post('/api/bot-webhook', (req, res) => {
   if (!WEBHOOK_SECRET) {
     return sendError(res, 503, 'Webhook secret is not configured');
   }
@@ -1001,7 +1013,18 @@ app.post('/api/bot-webhook', async (req, res) => {
   }
 
   const body = req.body || {};
-  const messageId = str(body.messageId || body.message_id || body.id);
+  const payload =
+    body.data && typeof body.data === 'object'
+      ? body.data
+      : body;
+
+  const messageId = str(
+    payload.messageId ||
+    payload.message_id ||
+    body.messageId ||
+    body.message_id ||
+    body.id
+  );
 
   if (messageId && seenMessageIds.has(messageId)) {
     return res.json({
@@ -1010,15 +1033,16 @@ app.post('/api/bot-webhook', async (req, res) => {
     });
   }
 
-  const payload = body.data && typeof body.data === 'object'
-    ? body.data
-    : body;
-
   const result = publishSpawn({
     tier: payload.tier || payload.rarity,
     eggName: payload.eggName || payload.egg_name || payload.egg,
     petName: payload.petName || payload.pet_name || payload.pet,
-    time: payload.time || payload.timestamp
+    location: payload.location || payload.biome,
+    biome: payload.biome || payload.location,
+    time: payload.time || payload.timestamp || payload.spawnedAt,
+    source: payload.source || 'discord',
+    messageId,
+    rawMessage: payload.rawMessage || payload.raw_message
   });
 
   if (!result.ok) {
@@ -1029,8 +1053,8 @@ app.post('/api/bot-webhook', async (req, res) => {
     seenMessageIds.add(messageId);
 
     if (seenMessageIds.size > 5000) {
-      const first = seenMessageIds.values().next().value;
-      seenMessageIds.delete(first);
+      const oldestId = seenMessageIds.values().next().value;
+      seenMessageIds.delete(oldestId);
     }
   }
 
