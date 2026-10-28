@@ -524,6 +524,7 @@ app.post('/api/buyer/login', async (req, res) => {
   }
 });
 
+
 /* -------------------- BUYER: GENERATE API KEY -------------------- */
 
 app.post(
@@ -564,14 +565,18 @@ app.post(
           'An active API key already exists. Use rotate-key instead.'
         );
       }
-            await connection.execute(
+
+      // FIX: Use the shared MySQL pool; connection is not defined here.
+      await pool.execute(
         `INSERT INTO api_keys
           (user_id, key_hash, key_prefix, is_active, expires_at, created_at)
-         VALUES (?, ?, ?, 1, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY), CURRENT_TIMESTAMP)`,
+         VALUES (?, ?, ?, 1,
+                 DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY),
+                 CURRENT_TIMESTAMP)`,
         [Number(req.buyer.id), keyHash, prefix]
       );
-      
-     return res.status(201).json({
+
+      return res.status(201).json({
         success: true,
         apiKey: key,
         api_key: key,
@@ -579,11 +584,16 @@ app.post(
         message: 'Save this key securely. It will not be shown again.'
       });
     } catch (error) {
-      console.error('[Generate API key]', error.message);
+      console.error(
+        '[Generate API key]',
+        error.stack || error.message
+      );
+
       return sendError(res, 500, 'Could not generate API key');
     }
   }
 );
+
 
 /* -------------------- BUYER: ROTATE API KEY -------------------- */
 
