@@ -320,49 +320,7 @@ function publishSpawn(input) {
 
 loadSpawnEvents();
 
-/* -------------------- AUTHENTICATION -------------------- */
-
-function requireAdmin(req, res, next) {
-  const token = getBearerToken(req);
-
-  if (!token) {
-    return sendError(res, 401, 'Admin login required');
-  }
-
-  try {
-    const payload = verifyToken(token);
-
-    if (payload.role !== 'admin') {
-      return sendError(res, 403, 'Admin access required');
-    }
-
-    req.admin = payload;
-    next();
-  } catch {
-    return sendError(res, 401, 'Invalid or expired admin session');
-  }
-}
-
-function requireBuyer(req, res, next) {
-  const token = getBearerToken(req);
-
-  if (!token) {
-    return sendError(res, 401, 'Buyer login required');
-  }
-
-  try {
-    const payload = verifyToken(token);
-
-    if (payload.role !== 'buyer' || !payload.id) {
-      return sendError(res, 403, 'Buyer access required');
-    }
-
-    req.buyer = payload;
-    next();
-  } catch {
-    return sendError(res, 401, 'Invalid or expired buyer session');
-  }
-}
+/* -------------------- API KEY AUTHENTICATION -------------------- */
 
 async function requireApiKey(req, res, next) {
   if (!needDb(res)) return;
@@ -379,27 +337,59 @@ async function requireApiKey(req, res, next) {
     const keyHash = hashApiKey(apiKey);
 
     const [rows] = await pool.execute(
-      `SELECT id, user_id
-       FROM api_keys
-       WHERE key_hash = ?
-         AND is_active = 1
+      `SELECT k.id, k.user_id
+       FROM api_keys k
+       INNER JOIN users u ON u.id = k.user_id
+       WHERE k.key_hash = ?
+         AND k.is_active = 1
+         AND k.expires_at > UTC_TIMESTAMP()
+         AND u.is_active = 1
        LIMIT 1`,
       [keyHash]
     );
 
     if (!rows.length) {
-      return sendError(res, 401, 'Invalid or inactive API key');
+      return sendError(
+        res,
+        401,
+        'Invalid, expired, or inactive API key'
+      );
     }
 
     req.apiKeyRecord = rows[0];
 
-    next();
+    await pool.execute(
+      `UPDATE api_keys
+       SET last_used_at = UTC_TIMESTAMP()
+       WHERE id = ?`,
+      [rows[0].id]
+    );
+
+    return next();
   } catch (error) {
     console.error('[API key auth]', error.message);
     return sendError(res, 500, 'Could not validate API key');
   }
 }
 
+/* -------------------- HEALTH -------------------- */
+
+app.get('/health', async (req, res) => {
+  const dbOk = await checkDatabase();
+
+  res.status(dbOk ? 200 : 503).json({
+    success: dbOk,
+    status: dbOk ? 'ok' : 'degraded',
+    service: 'steal-egg-saas-backend',
+    databaseConnected: dbOk,
+    webhookReceived: Boolean(lastWebhookAt),
+    lastWebhookAt,
+    activeSchedules: recentEvents.length,
+    activeSseClients: CLIENTS.size,
+    uptimeSeconds: Math.floor(process.uptime()),
+    startedAt: serverStartedAt
+  });
+});
 /* -------------------- HEALTH -------------------- */
 
 app.get('/health', async (req, res) => {
