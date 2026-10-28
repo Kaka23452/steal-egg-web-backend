@@ -139,90 +139,73 @@ function verifyToken(token) {
   });
 }
 
-/* -------------------- DATABASE -------------------- */
 
-function createDatabasePool() {
-  const databaseUrl =
-    process.env.DATABASE_URL ||
-    process.env.TIDB_DATABASE_URL;
+/* -------------------- SESSION / BUYER / ADMIN AUTH -------------------- */
 
-  if (databaseUrl) {
-    const uri = new URL(databaseUrl);
+function verifySession(req, expectedRole) {
+  try {
+    const token = getBearerToken(req);
+    if (!token) return null;
 
-    const usingTidbUrl =
-  Boolean(process.env.TIDB_DATABASE_URL) &&
-  databaseUrl === process.env.TIDB_DATABASE_URL;
+    const payload = verifyToken(token);
 
-const sslEnabled =
-  usingTidbUrl ||
-  uri.searchParams.get('ssl') === 'true' ||
-  uri.searchParams.get('ssl-mode') === 'REQUIRED' ||
-  uri.searchParams.get('ssl-mode') === 'VERIFY_IDENTITY' ||
-  process.env.DB_SSL === 'true' ||
-  process.env.TIDB_ENABLE_SSL === 'true';
+    if (!payload || payload.role !== expectedRole) {
+      return null;
+    }
 
-    return mysql.createPool({
-      host: uri.hostname,
-      port: Number(uri.port || 4000),
-      user: decodeURIComponent(uri.username),
-      password: decodeURIComponent(uri.password),
-      database: decodeURIComponent(uri.pathname.replace(/^\//, '')),
-      waitForConnections: true,
-      connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
-      queueLimit: 0,
-      connectTimeout: 10000,
-      enableKeepAlive: true,
-      ssl: sslEnabled ? { rejectUnauthorized: true } : undefined,
-      charset: 'utf8mb4'
-    });
-  }
+    // Buyer login currently signs the token with `id`.
+    // Normalize it so all buyer routes can use `session.userId`.
+    if (expectedRole === 'buyer') {
+      const userId = Number(
+        payload.userId ?? payload.id ?? payload.sub
+      );
 
-  const host = process.env.DB_HOST;
-  const user = process.env.DB_USER;
-  const database = process.env.DB_NAME;
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        return null;
+      }
 
-  if (!host || !user || !database) {
-    console.warn(
-      '[Database] Configure DATABASE_URL, TIDB_DATABASE_URL, ' +
-      'or DB_HOST, DB_USER and DB_NAME.'
-    );
+      return {
+        ...payload,
+        userId,
+        id: userId
+      };
+    }
+
+    return payload;
+  } catch (error) {
     return null;
   }
-
-  return mysql.createPool({
-    host,
-    port: Number(process.env.DB_PORT || 3306),
-    user,
-    password: process.env.DB_PASSWORD || '',
-    database,
-    waitForConnections: true,
-    connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
-    queueLimit: 0,
-    connectTimeout: 10000,
-    enableKeepAlive: true,
-    ssl: process.env.DB_SSL === 'true'
-      ? { rejectUnauthorized: true }
-      : undefined,
-    charset: 'utf8mb4'
-  });
 }
 
-async function checkDatabase() {
-  if (!pool) {
-    databaseConnected = false;
-    return false;
+function requireBuyer(req, res, next) {
+  const session = verifySession(req, 'buyer');
+
+  if (!session || !session.userId) {
+    return sendError(res, 401, 'Buyer login required');
   }
 
-  try {
-    await pool.query('SELECT 1');
-    databaseConnected = true;
-    return true;
-  } catch (error) {
-    databaseConnected = false;
-    console.error('[Database health]', error.message);
-    return false;
-  }
+  req.buyer = {
+    id: session.userId,
+    email: str(session.email)
+  };
+
+  req.auth = session;
+  return next();
 }
+
+function requireAdmin(req, res, next) {
+  const session = verifySession(req, 'admin');
+
+  if (!session) {
+    return sendError(res, 401, 'Admin login required');
+  }
+
+  req.admin = session;
+  req.auth = session;
+
+  return next();
+}
+
 
 /* -------------------- SPAWN EVENT STORAGE -------------------- */
 
