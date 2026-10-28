@@ -587,69 +587,103 @@ app.post(
 
 /* -------------------- BUYER: ROTATE API KEY -------------------- */
 
-app.post(
-  '/api/buyer/rotate-key',
-  requireBuyer,
-  async (req, res) => {
-    if (!needDb(res)) return;
+app.post('/api/buyer/rotate-key', async (req, res) => {
+  if (!needDb(res)) return;
 
-    let connection;
+  // Use the existing buyer login session.
+  const session = verifySession(req, 'buyer');
 
-    try {
-      connection = await pool.getConnection();
-      await connection.beginTransaction();
+  if (!session || !session.userId) {
+    return sendError(res, 401, 'Buyer login required');
+  }
 
-      const key = createApiKey();
-      const keyHash = hashApiKey(key);
-      const prefix = key.slice(0, 12);
+  let connection;
 
-      // Deactivate existing keys only inside this transaction.
-      await connection.execute(
-        `UPDATE api_keys
-         SET is_active = 0
-         WHERE user_id = ? AND is_active = 1`,
-        [Number(req.buyer.id)]
-      );
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-      // expires_at is NOT NULL in the existing database schema.
-      await connection.execute(
-        `INSERT INTO api_keys
-          (user_id, key_hash, key_prefix, is_active,
-           expires_at, created_at)
-         VALUES (
-           ?, ?, ?, 1,
-           DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY),
-           UTC_TIMESTAMP()
-         )`,
-        [Number(req.buyer.id), keyHash, prefix]
-      );
+    // Create the replacement key before deactivating the old one.
+    const key = createApiKey();
+    const keyHash = hashApiKey(key);
+    const prefix = key.slice(0, 12);
 
-      await connection.commit();
+    const configuredDays = Number(
+      process.env.API_KEY_TTL_DAYS || 365
+    );
 
-      return res.json({
-        success: true,
-        apiKey: key,
-        api_key: key,
-        key,
-        message: 'API key rotated. Save the new key securely.'
-      });
-    } catch (error) {
-      if (connection) {
-        try {
-          await connection.rollback();
-        } catch (rollbackError) {
-          console.error('[Rotate API key rollback]', rollbackError.message);
-        }
+    const expiresDays = Number.isFinite(configuredDays)
+      ? Math.min(3650, Math.max(1, Math.floor(configuredDays)))
+      : 365;
+
+    // Deactivate this buyer's current active API keys.
+    await connection.execute(
+      `UPDATE api_keys
+       SET is_active = 0
+       WHERE user_id = ? AND is_active = 1`,
+      [session.userId]
+    );
+
+    // expires_at is required by the database schema.
+    await connection.execute(
+      `INSERT INTO api_keys
+        (
+          user_id,
+          key_hash,
+          key_prefix,
+          is_active,
+          expires_at,
+          created_at
+        )
+       VALUES (
+          ?, ?, ?, 1,
+          DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY),
+          UTC_TIMESTAMP()
+       )`,
+      [
+        session.userId,
+        keyHash,
+        prefix,
+        expiresDays
+      ]
+    );
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      apiKey: key,
+      api_key: key,
+      key,
+      rotated: true,
+      expiresInDays: expiresDays,
+      message: 'API key rotated. Save the new key securely.'
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          '[Rotate API key rollback]',
+          rollbackError.message
+        );
       }
+    }
 
-      console.error('[Rotate API key]', error.message);
-      return sendError(res, 500, 'Could not rotate API key');
-    } finally {
-      if (connection) connection.release();
+    console.error(
+      '[Rotate API key]',
+      error.code || '',
+      error.message || error
+    );
+
+    return sendError(res, 500, 'Could not rotate API key');
+  } finally {
+    if (connection) {
+      connection.release();
     }
   }
-);
-
+});
 
 /* -------------------- ADMIN: LIST BUYERS -------------------- */
 
