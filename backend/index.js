@@ -5,18 +5,11 @@
  * Steal An Egg SaaS Backend
  * Node.js 20+
  *
- * Supports:
- * - TiDB / MySQL connection through DATABASE_URL or TIDB_DATABASE_URL
- * - Admin login and buyer management
- * - Buyer email/password login
- * - API key generation and rotation
- * - API-key protected schedule and stock endpoints
- * - Discord webhook spawn events
- * - Server-Sent Events (SSE) at /events
- * - Static pages in backend/public
+ * Uses the existing schema:
+ * users, api_keys, egg_pet_map, location_alias,
+ * stocks, processed_messages
  *
- * IMPORTANT:
- * Verify SQL column names against backend/schema.sql before deployment.
+ * Do not put Discord bot tokens or database credentials in frontend HTML.
  */
 
 require('dotenv').config();
@@ -33,16 +26,15 @@ const path = require('path');
 const app = express();
 
 const PORT = Number(process.env.PORT || 4000);
-const JWT_SECRET = process.env.JWT_SECRET;
-const MASTER_USERNAME = process.env.MASTER_USERNAME;
-const MASTER_PASSWORD = process.env.MASTER_PASSWORD;
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const MASTER_USERNAME = process.env.MASTER_USERNAME || '';
+const MASTER_PASSWORD = process.env.MASTER_PASSWORD || '';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '';
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const SPAWN_STORE =
-  process.env.SPAWN_STORE ||
-  path.join(__dirname, 'spawn-events.json');
+  process.env.SPAWN_STORE || path.join(__dirname, 'spawn-events.json');
 
 const MAX_EVENTS = 100;
 const HEARTBEAT_MS = 25000;
@@ -54,7 +46,7 @@ let pool = null;
 let databaseConnected = false;
 let lastWebhookAt = null;
 let lastMessage = null;
-let serverStartedAt = new Date().toISOString();
+const serverStartedAt = new Date().toISOString();
 
 /* -------------------- BASIC CONFIGURATION -------------------- */
 
@@ -81,10 +73,7 @@ function str(value) {
 }
 
 function sendError(res, status, message) {
-  return res.status(status).json({
-    success: false,
-    error: message
-  });
+  return res.status(status).json({ success: false, error: message });
 }
 
 function needDb(res) {
@@ -92,14 +81,12 @@ function needDb(res) {
     sendError(res, 503, 'Database is not available');
     return false;
   }
-
   return true;
 }
 
 function safeEqual(a, b) {
   const left = Buffer.from(String(a || ''));
   const right = Buffer.from(String(b || ''));
-
   return left.length === right.length &&
     crypto.timingSafeEqual(left, right);
 }
@@ -113,16 +100,15 @@ function createApiKey() {
 }
 
 function getBearerToken(req) {
-  const header = str(req.headers.authorization);
-  const match = header.match(/^Bearer\s+(.+)$/i);
+  const match = str(req.headers.authorization)
+    .match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : '';
 }
 
 function signToken(payload) {
-  if (!JWT_SECRET || JWT_SECRET.length < 32) {
-    throw new Error('JWT_SECRET must be configured with at least 32 characters');
+  if (JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters');
   }
-
   return jwt.sign(payload, JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '12h',
     issuer: 'steal-egg-backend'
@@ -130,17 +116,100 @@ function signToken(payload) {
 }
 
 function verifyToken(token) {
-  if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  if (JWT_SECRET.length < 32) {
     throw new Error('JWT_SECRET is not configured securely');
   }
-
   return jwt.verify(token, JWT_SECRET, {
     issuer: 'steal-egg-backend'
   });
 }
 
+/* -------------------- DATABASE -------------------- */
 
-/* -------------------- SESSION / BUYER / ADMIN AUTH -------------------- */
+function createDatabasePool() {
+  const connectionString =
+    process.env.TIDB_DATABASE_URL ||
+    process.env.DATABASE_URL;
+
+  const commonOptions = {
+    waitForConnections: true,
+    connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 5),
+    queueLimit: 0,
+    enableKeepAlive: true,
+    connectTimeout: 15000,
+    decimalNumbers: true
+  };
+
+  if (connectionString) {
+    const url = new URL(connectionString);
+    if (!['mysql:', 'mysql2:'].includes(url.protocol)) {
+      throw new Error('Database URL must use mysql://');
+    }
+
+    const options = {
+      ...commonOptions,
+      host: url.hostname,
+      port: Number(url.port || 3306),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: decodeURIComponent(url.pathname.replace(/^\//, '')),
+      charset: 'utf8mb4'
+    };
+
+    if (url.searchParams.get('ssl') ||
+        url.searchParams.get('sslaccept')) {
+      options.ssl = { minVersion: 'TLSv1.2' };
+    }
+
+    return mysql.createPool(options);
+  }
+
+  const host = process.env.DB_HOST;
+  const user = process.env.DB_USER;
+  const database = process.env.DB_NAME;
+
+  if (!host || !user || !database) {
+    console.error(
+      '[Database] Set TIDB_DATABASE_URL / DATABASE_URL ' +
+      'or DB_HOST, DB_USER, DB_NAME'
+    );
+    return null;
+  }
+
+  return mysql.createPool({
+    ...commonOptions,
+    host,
+    port: Number(process.env.DB_PORT || 4000),
+    user,
+    password: process.env.DB_PASSWORD || '',
+    database,
+    charset: 'utf8mb4',
+    ssl: process.env.DB_SSL === 'false'
+      ? undefined
+      : { minVersion: 'TLSv1.2' }
+  });
+}
+
+async function checkDatabase() {
+  if (!pool) {
+    databaseConnected = false;
+    return false;
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    await connection.query('SELECT 1');
+    connection.release();
+    databaseConnected = true;
+  } catch (error) {
+    databaseConnected = false;
+    console.error('[Database check]', error.message);
+  }
+
+  return databaseConnected;
+}
+
+/* -------------------- SESSION AUTH -------------------- */
 
 function verifySession(req, expectedRole) {
   try {
@@ -148,79 +217,92 @@ function verifySession(req, expectedRole) {
     if (!token) return null;
 
     const payload = verifyToken(token);
+    if (!payload || payload.role !== expectedRole) return null;
 
-    if (!payload || payload.role !== expectedRole) {
-      return null;
-    }
-
-    // Buyer login currently signs the token with `id`.
-    // Normalize it so all buyer routes can use `session.userId`.
     if (expectedRole === 'buyer') {
-      const userId = Number(
-        payload.userId ?? payload.id ?? payload.sub
-      );
-
-      if (!Number.isSafeInteger(userId) || userId <= 0) {
-        return null;
-      }
-
-      return {
-        ...payload,
-        userId,
-        id: userId
-      };
+      const userId = Number(payload.userId ?? payload.id ?? payload.sub);
+      if (!Number.isSafeInteger(userId) || userId < 1) return null;
+      return { ...payload, userId, id: userId };
     }
 
     return payload;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
 
 function requireBuyer(req, res, next) {
   const session = verifySession(req, 'buyer');
-
   if (!session || !session.userId) {
     return sendError(res, 401, 'Buyer login required');
   }
 
-  req.buyer = {
-    id: session.userId,
-    email: str(session.email)
-  };
-
+  req.buyer = { id: session.userId, email: str(session.email) };
   req.auth = session;
-  return next();
+  next();
 }
 
 function requireAdmin(req, res, next) {
   const session = verifySession(req, 'admin');
-
-  if (!session) {
-    return sendError(res, 401, 'Admin login required');
-  }
-
+  if (!session) return sendError(res, 401, 'Admin login required');
   req.admin = session;
   req.auth = session;
-
-  return next();
+  next();
 }
 
+async function findValidApiKey(apiKey) {
+  if (!pool || !apiKey) return null;
+
+  const [rows] = await pool.execute(
+    `SELECT k.id, k.user_id
+       FROM api_keys k
+       INNER JOIN users u ON u.id = k.user_id
+      WHERE k.key_hash = ?
+        AND k.is_active = 1
+        AND (k.expires_at IS NULL OR k.expires_at > UTC_TIMESTAMP())
+        AND u.is_active = 1
+      LIMIT 1`,
+    [hashApiKey(apiKey)]
+  );
+
+  if (!rows.length) return null;
+
+  await pool.execute(
+    'UPDATE api_keys SET last_used_at = UTC_TIMESTAMP() WHERE id = ?',
+    [rows[0].id]
+  );
+
+  return rows[0];
+}
+
+async function requireApiKey(req, res, next) {
+  if (!needDb(res)) return;
+
+  const key = str(req.headers['x-api-key']) || str(req.query.apiKey);
+  if (!key) return sendError(res, 401, 'API key required');
+
+  try {
+    const record = await findValidApiKey(key);
+    if (!record) {
+      return sendError(res, 401, 'Invalid, expired, or inactive API key');
+    }
+
+    req.apiKeyRecord = record;
+    next();
+  } catch (error) {
+    console.error('[API key auth]', error.message);
+    return sendError(res, 500, 'Could not validate API key');
+  }
+}
 
 /* -------------------- SPAWN EVENT STORAGE -------------------- */
 
 function loadSpawnEvents() {
   try {
     if (!fs.existsSync(SPAWN_STORE)) return;
-
     const parsed = JSON.parse(fs.readFileSync(SPAWN_STORE, 'utf8'));
-
     if (Array.isArray(parsed)) {
-      recentEvents.splice(
-        0,
-        recentEvents.length,
-        ...parsed.slice(-MAX_EVENTS)
-      );
+      recentEvents.push(...parsed.slice(-MAX_EVENTS));
     }
   } catch (error) {
     console.error('[Spawn store load]', error.message);
@@ -229,9 +311,7 @@ function loadSpawnEvents() {
 
 function persistSpawnEvents() {
   try {
-    const dir = path.dirname(SPAWN_STORE);
-    fs.mkdirSync(dir, { recursive: true });
-
+    fs.mkdirSync(path.dirname(SPAWN_STORE), { recursive: true });
     const temp = SPAWN_STORE + '.tmp';
     fs.writeFileSync(temp, JSON.stringify(recentEvents, null, 2));
     fs.renameSync(temp, SPAWN_STORE);
@@ -241,20 +321,16 @@ function persistSpawnEvents() {
 }
 
 function normalizeTier(value) {
-  const tier = str(value).toLowerCase();
-
-  const allowed = {
+  const tiers = {
     secret: 'Secret',
     divine: 'Divine',
     eternal: 'Eternal'
   };
-
-  return allowed[tier] || '';
+  return tiers[str(value).toLowerCase()] || '';
 }
 
 function broadcastEvent(event) {
   const packet = `data: ${JSON.stringify(event)}\n\n`;
-
   for (const client of CLIENTS) {
     try {
       client.write(packet);
@@ -265,16 +341,13 @@ function broadcastEvent(event) {
 }
 
 function publishSpawn(input) {
-  const tier = normalizeTier(input.tier);
-  const eggName = str(input.eggName || input.egg_name);
-  const petName = str(input.petName || input.pet_name);
-  const timestamp = input.time || input.timestamp || new Date().toISOString();
+  const tier = normalizeTier(input.tier || input.rarity);
+  const eggName = str(input.eggName || input.egg_name || input.egg);
+  const petName = str(input.petName || input.pet_name || input.pet);
+  const time = input.time || input.timestamp || new Date().toISOString();
 
   if (!tier || !eggName) {
-    return {
-      ok: false,
-      error: 'A supported tier and eggName are required'
-    };
+    return { ok: false, error: 'Supported tier and eggName are required' };
   }
 
   const event = {
@@ -282,19 +355,15 @@ function publishSpawn(input) {
     tier,
     eggName,
     petName: petName || null,
-    time: timestamp,
+    time,
     receivedAt: new Date().toISOString()
   };
 
   recentEvents.push(event);
-
-  while (recentEvents.length > MAX_EVENTS) {
-    recentEvents.shift();
-  }
+  while (recentEvents.length > MAX_EVENTS) recentEvents.shift();
 
   lastWebhookAt = new Date().toISOString();
   lastMessage = event;
-
   persistSpawnEvents();
   broadcastEvent(event);
 
@@ -303,81 +372,10 @@ function publishSpawn(input) {
 
 loadSpawnEvents();
 
-/* -------------------- API KEY AUTHENTICATION -------------------- */
-
-async function requireApiKey(req, res, next) {
-  if (!needDb(res)) return;
-
-  const apiKey =
-    str(req.headers['x-api-key']) ||
-    str(req.query.apiKey);
-
-  if (!apiKey) {
-    return sendError(res, 401, 'API key required');
-  }
-
-  try {
-    const keyHash = hashApiKey(apiKey);
-
-    const [rows] = await pool.execute(
-      `SELECT k.id, k.user_id
-       FROM api_keys k
-       INNER JOIN users u ON u.id = k.user_id
-       WHERE k.key_hash = ?
-         AND k.is_active = 1
-         AND k.expires_at > UTC_TIMESTAMP()
-         AND u.is_active = 1
-       LIMIT 1`,
-      [keyHash]
-    );
-
-    if (!rows.length) {
-      return sendError(
-        res,
-        401,
-        'Invalid, expired, or inactive API key'
-      );
-    }
-
-    req.apiKeyRecord = rows[0];
-
-    await pool.execute(
-      `UPDATE api_keys
-       SET last_used_at = UTC_TIMESTAMP()
-       WHERE id = ?`,
-      [rows[0].id]
-    );
-
-    return next();
-  } catch (error) {
-    console.error('[API key auth]', error.message);
-    return sendError(res, 500, 'Could not validate API key');
-  }
-}
-
 /* -------------------- HEALTH -------------------- */
 
 app.get('/health', async (req, res) => {
   const dbOk = await checkDatabase();
-
-  res.status(dbOk ? 200 : 503).json({
-    success: dbOk,
-    status: dbOk ? 'ok' : 'degraded',
-    service: 'steal-egg-saas-backend',
-    databaseConnected: dbOk,
-    webhookReceived: Boolean(lastWebhookAt),
-    lastWebhookAt,
-    activeSchedules: recentEvents.length,
-    activeSseClients: CLIENTS.size,
-    uptimeSeconds: Math.floor(process.uptime()),
-    startedAt: serverStartedAt
-  });
-});
-/* -------------------- HEALTH -------------------- */
-
-app.get('/health', async (req, res) => {
-  const dbOk = await checkDatabase();
-
   res.status(dbOk ? 200 : 503).json({
     success: dbOk,
     status: dbOk ? 'ok' : 'degraded',
@@ -393,17 +391,16 @@ app.get('/health', async (req, res) => {
 });
 
 app.get('/health/database', async (req, res) => {
-  const dbOk = await checkDatabase();
-
-  res.status(dbOk ? 200 : 503).json({
-    success: dbOk,
-    databaseConnected: dbOk
+  const ok = await checkDatabase();
+  res.status(ok ? 200 : 503).json({
+    success: ok,
+    databaseConnected: ok
   });
 });
 
 /* -------------------- ADMIN LOGIN -------------------- */
 
-app.post('/api/admin/login', async (req, res) => {
+app.post('/api/admin/login', (req, res) => {
   const username = str(req.body?.username);
   const password = str(req.body?.password);
 
@@ -411,24 +408,14 @@ app.post('/api/admin/login', async (req, res) => {
     return sendError(res, 503, 'Admin credentials are not configured');
   }
 
-  if (
-    !safeEqual(username, MASTER_USERNAME) ||
-    !safeEqual(password, MASTER_PASSWORD)
-  ) {
+  if (!safeEqual(username, MASTER_USERNAME) ||
+      !safeEqual(password, MASTER_PASSWORD)) {
     return sendError(res, 401, 'Invalid admin credentials');
   }
 
   try {
-    const token = signToken({
-      role: 'admin',
-      username: MASTER_USERNAME
-    });
-
-    return res.json({
-      success: true,
-      token,
-      accessToken: token
-    });
+    const token = signToken({ role: 'admin', username: MASTER_USERNAME });
+    return res.json({ success: true, token, accessToken: token });
   } catch (error) {
     console.error('[Admin login]', error.message);
     return sendError(res, 500, 'Could not create admin session');
@@ -442,37 +429,24 @@ app.post('/api/buyer/login', async (req, res) => {
 
   const email = str(req.body?.email).toLowerCase();
   const password = str(req.body?.password);
-
   if (!email || !password) {
     return sendError(res, 400, 'Email and password are required');
   }
 
   try {
     const [rows] = await pool.execute(
-      `SELECT id, email, password_hash, is_active
-       FROM users
-       WHERE email = ?
-       LIMIT 1`,
+      'SELECT id, email, password_hash, is_active FROM users WHERE email = ? LIMIT 1',
       [email]
     );
 
-    if (!rows.length) {
-      return sendError(res, 401, 'Invalid email or password');
-    }
-
+    if (!rows.length) return sendError(res, 401, 'Invalid email or password');
     const user = rows[0];
 
-    if (
-      user.is_active === 0 ||
-      user.is_active === false ||
-      String(user.is_active) === '0'
-    ) {
+    if (Number(user.is_active) !== 1) {
       return sendError(res, 403, 'This buyer account is inactive');
     }
 
-    const valid = await bcrypt.compare(password, user.password_hash);
-
-    if (!valid) {
+    if (!await bcrypt.compare(password, user.password_hash)) {
       return sendError(res, 401, 'Invalid email or password');
     }
 
@@ -486,10 +460,7 @@ app.post('/api/buyer/login', async (req, res) => {
       success: true,
       token,
       accessToken: token,
-      user: {
-        id: Number(user.id),
-        email: user.email
-      }
+      user: { id: Number(user.id), email: user.email }
     });
   } catch (error) {
     console.error('[Buyer login]', error.message);
@@ -497,213 +468,134 @@ app.post('/api/buyer/login', async (req, res) => {
   }
 });
 
+/* -------------------- BUYER API KEYS -------------------- */
 
-/* -------------------- BUYER: GENERATE API KEY -------------------- */
-
-app.post(
-  '/api/buyer/generate-key',
-  requireBuyer,
-  async (req, res) => {
-    if (!needDb(res)) return;
-
-    const key = createApiKey();
-    const keyHash = hashApiKey(key);
-    const prefix = key.slice(0, 12);
-
-    try {
-      const [users] = await pool.execute(
-        'SELECT id, is_active FROM users WHERE id = ? LIMIT 1',
-        [Number(req.buyer.id)]
-      );
-
-      if (
-        !users.length ||
-        users[0].is_active === 0 ||
-        String(users[0].is_active) === '0'
-      ) {
-        return sendError(res, 403, 'Buyer account is inactive');
-      }
-
-      const [existing] = await pool.execute(
-        `SELECT id FROM api_keys
-         WHERE user_id = ? AND is_active = 1
-         LIMIT 1`,
-        [Number(req.buyer.id)]
-      );
-
-      if (existing.length) {
-        return sendError(
-          res,
-          409,
-          'An active API key already exists. Use rotate-key instead.'
-        );
-      }
-
-      // FIX: Use the shared MySQL pool; connection is not defined here.
-      await pool.execute(
-        `INSERT INTO api_keys
-          (user_id, key_hash, key_prefix, is_active, expires_at, created_at)
-         VALUES (?, ?, ?, 1,
-                 DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY),
-                 CURRENT_TIMESTAMP)`,
-        [Number(req.buyer.id), keyHash, prefix]
-      );
-
-      return res.status(201).json({
-        success: true,
-        apiKey: key,
-        api_key: key,
-        key,
-        message: 'Save this key securely. It will not be shown again.'
-      });
-    } catch (error) {
-      console.error(
-        '[Generate API key]',
-        error.stack || error.message
-      );
-
-      return sendError(res, 500, 'Could not generate API key');
-    }
-  }
-);
-
-
-/* -------------------- BUYER: ROTATE API KEY -------------------- */
-
-app.post('/api/buyer/rotate-key', async (req, res) => {
+app.post('/api/buyer/generate-key', requireBuyer, async (req, res) => {
   if (!needDb(res)) return;
 
-  // Use the existing buyer login session.
-  const session = verifySession(req, 'buyer');
+  const key = createApiKey();
+  const hash = hashApiKey(key);
+  const prefix = key.slice(0, 12);
 
-  if (!session || !session.userId) {
-    return sendError(res, 401, 'Buyer login required');
+  try {
+    const [users] = await pool.execute(
+      'SELECT id, is_active FROM users WHERE id = ? LIMIT 1',
+      [req.buyer.id]
+    );
+
+    if (!users.length || Number(users[0].is_active) !== 1) {
+      return sendError(res, 403, 'Buyer account is inactive');
+    }
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM api_keys WHERE user_id = ? AND is_active = 1 LIMIT 1',
+      [req.buyer.id]
+    );
+
+    if (existing.length) {
+      return sendError(res, 409, 'An active key exists. Use rotate-key.');
+    }
+
+    await pool.execute(
+      `INSERT INTO api_keys
+       (user_id, key_hash, key_prefix, is_active, expires_at, created_at)
+       VALUES (?, ?, ?, 1, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 365 DAY), UTC_TIMESTAMP())`,
+      [req.buyer.id, hash, prefix]
+    );
+
+    return res.status(201).json({
+      success: true,
+      apiKey: key,
+      api_key: key,
+      key,
+      message: 'Save this key securely. It will not be shown again.'
+    });
+  } catch (error) {
+    console.error('[Generate API key]', error.message);
+    return sendError(res, 500, 'Could not generate API key');
   }
+});
+
+app.post('/api/buyer/rotate-key', requireBuyer, async (req, res) => {
+  if (!needDb(res)) return;
 
   let connection;
-
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    // Create the replacement key before deactivating the old one.
     const key = createApiKey();
-    const keyHash = hashApiKey(key);
+    const hash = hashApiKey(key);
     const prefix = key.slice(0, 12);
-
-    const configuredDays = Number(
-      process.env.API_KEY_TTL_DAYS || 365
-    );
-
-    const expiresDays = Number.isFinite(configuredDays)
-      ? Math.min(3650, Math.max(1, Math.floor(configuredDays)))
+    const parsedDays = Number(process.env.API_KEY_TTL_DAYS || 365);
+    const days = Number.isFinite(parsedDays)
+      ? Math.min(3650, Math.max(1, Math.floor(parsedDays)))
       : 365;
 
-    // Deactivate this buyer's current active API keys.
-    await connection.execute(
-      `UPDATE api_keys
-       SET is_active = 0
-       WHERE user_id = ? AND is_active = 1`,
-      [session.userId]
+    const [users] = await connection.execute(
+      'SELECT id, is_active FROM users WHERE id = ? LIMIT 1 FOR UPDATE',
+      [req.buyer.id]
     );
 
-    // expires_at is required by the database schema.
+    if (!users.length || Number(users[0].is_active) !== 1) {
+      await connection.rollback();
+      return sendError(res, 403, 'Buyer account is inactive');
+    }
+
+    await connection.execute(
+      'UPDATE api_keys SET is_active = 0 WHERE user_id = ? AND is_active = 1',
+      [req.buyer.id]
+    );
+
     await connection.execute(
       `INSERT INTO api_keys
-        (
-          user_id,
-          key_hash,
-          key_prefix,
-          is_active,
-          expires_at,
-          created_at
-        )
-       VALUES (
-          ?, ?, ?, 1,
-          DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY),
-          UTC_TIMESTAMP()
-       )`,
-      [
-        session.userId,
-        keyHash,
-        prefix,
-        expiresDays
-      ]
+       (user_id, key_hash, key_prefix, is_active, expires_at, created_at)
+       VALUES (?, ?, ?, 1, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY), UTC_TIMESTAMP())`,
+      [req.buyer.id, hash, prefix, days]
     );
 
     await connection.commit();
-
     return res.json({
       success: true,
       apiKey: key,
       api_key: key,
       key,
       rotated: true,
-      expiresInDays: expiresDays,
-      message: 'API key rotated. Save the new key securely.'
+      expiresInDays: days
     });
   } catch (error) {
     if (connection) {
-      try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error(
-          '[Rotate API key rollback]',
-          rollbackError.message
-        );
-      }
+      try { await connection.rollback(); } catch {}
     }
-
-    console.error(
-      '[Rotate API key]',
-      error.code || '',
-      error.message || error
-    );
-
+    console.error('[Rotate API key]', error.message);
     return sendError(res, 500, 'Could not rotate API key');
   } finally {
-    if (connection) {
-      connection.release();
-    }
+    if (connection) connection.release();
   }
 });
 
-/* -------------------- ADMIN: LIST BUYERS -------------------- */
+/* -------------------- ADMIN: BUYER MANAGEMENT -------------------- */
 
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
 
   try {
     const [rows] = await pool.execute(
-      `SELECT
-         u.id,
-         u.email,
-         u.is_active,
-         u.created_at,
-         u.updated_at,
-         EXISTS (
-           SELECT 1
-           FROM api_keys k
-           WHERE k.user_id = u.id AND k.is_active = 1
-         ) AS has_active_key
-       FROM users u
-       ORDER BY u.id DESC
-       LIMIT 500`
+      `SELECT u.id, u.email, u.is_active, u.created_at, u.updated_at,
+       EXISTS (
+         SELECT 1 FROM api_keys k
+         WHERE k.user_id = u.id AND k.is_active = 1
+       ) AS has_active_key
+       FROM users u ORDER BY u.id DESC LIMIT 500`
     );
 
     return res.json({
       success: true,
-      users: rows.map(user => ({
-        ...user,
-        id: Number(user.id),
-        is_active:
-          user.is_active === 1 ||
-          user.is_active === true ||
-          String(user.is_active) === '1',
-        has_active_key:
-          user.has_active_key === 1 ||
-          user.has_active_key === true ||
-          String(user.has_active_key) === '1'
+      users: rows.map(u => ({
+        ...u,
+        id: Number(u.id),
+        is_active: Number(u.is_active) === 1,
+        has_active_key: Number(u.has_active_key) === 1
       }))
     });
   } catch (error) {
@@ -712,8 +604,6 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   }
 });
 
-/* -------------------- ADMIN: CREATE BUYER -------------------- */
-
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
 
@@ -721,235 +611,134 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
   const password = str(req.body?.password);
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return sendError(res, 400, 'A valid email address is required');
+    return sendError(res, 400, 'A valid email is required');
   }
-
   if (password.length < 8 || password.length > 128) {
-    return sendError(
-      res,
-      400,
-      'Password must be between 8 and 128 characters'
-    );
+    return sendError(res, 400, 'Password must be 8–128 characters');
   }
 
   try {
     const passwordHash = await bcrypt.hash(password, 12);
-
     const [result] = await pool.execute(
       `INSERT INTO users
-        (email, password_hash, is_active, created_at, updated_at)
-       VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+       (email, password_hash, is_active, created_at, updated_at)
+       VALUES (?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
       [email, passwordHash]
     );
 
     return res.status(201).json({
       success: true,
-      user: {
-        id: Number(result.insertId),
-        email,
-        is_active: true
-      }
+      user: { id: Number(result.insertId), email, is_active: true }
     });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return sendError(res, 409, 'A buyer with this email already exists');
+      return sendError(res, 409, 'Buyer email already exists');
     }
-
     console.error('[Create buyer]', error.message);
     return sendError(res, 500, 'Could not create buyer');
   }
 });
 
-/* -------------------- ADMIN: ACTIVATE / DEACTIVATE BUYER -------------------- */
+app.patch('/api/admin/users/:id/status', requireAdmin, async (req, res) => {
+  if (!needDb(res)) return;
 
-app.patch(
-  '/api/admin/users/:id/status',
-  requireAdmin,
-  async (req, res) => {
-    if (!needDb(res)) return;
+  const id = Number(req.params.id);
+  const active = req.body?.is_active;
 
-    const userId = Number(req.params.id);
-    const active = req.body?.is_active;
-
-    if (!Number.isSafeInteger(userId) || userId < 1) {
-      return sendError(res, 400, 'Invalid buyer ID');
-    }
-
-    if (typeof active !== 'boolean') {
-      return sendError(res, 400, 'is_active must be true or false');
-    }
-
-    try {
-      const [result] = await pool.execute(
-        `UPDATE users
-         SET is_active = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [active ? 1 : 0, userId]
-      );
-
-      if (!result.affectedRows) {
-        return sendError(res, 404, 'Buyer not found');
-      }
-
-      if (!active) {
-        await pool.execute(
-          `UPDATE api_keys
-           SET is_active = 0
-           WHERE user_id = ?`,
-          [userId]
-        );
-      }
-
-      return res.json({
-        success: true,
-        message: active ? 'Buyer activated' : 'Buyer deactivated'
-      });
-    } catch (error) {
-      console.error('[Buyer status]', error.message);
-      return sendError(res, 500, 'Could not update buyer status');
-    }
+  if (!Number.isSafeInteger(id) || id < 1) {
+    return sendError(res, 400, 'Invalid buyer ID');
   }
-);
-
-/* -------------------- ADMIN: RESET BUYER PASSWORD -------------------- */
-
-app.post(
-  '/api/admin/users/:id/reset-password',
-  requireAdmin,
-  async (req, res) => {
-    if (!needDb(res)) return;
-
-    const userId = Number(req.params.id);
-    const newPassword = str(req.body?.password);
-
-    if (!Number.isSafeInteger(userId) || userId < 1) {
-      return sendError(res, 400, 'Invalid buyer ID');
-    }
-
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      return sendError(
-        res,
-        400,
-        'Password must be between 8 and 128 characters'
-      );
-    }
-
-    try {
-      const [users] = await pool.execute(
-        'SELECT id FROM users WHERE id = ? LIMIT 1',
-        [userId]
-      );
-
-      if (!users.length) {
-        return sendError(res, 404, 'Buyer not found');
-      }
-
-      const passwordHash = await bcrypt.hash(newPassword, 12);
-
-      await pool.execute(
-        `UPDATE users
-         SET password_hash = ?,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [passwordHash, userId]
-      );
-
-      return res.json({
-        success: true,
-        message: 'Buyer password reset successfully'
-      });
-    } catch (error) {
-      console.error('[Reset buyer password]', error.message);
-      return sendError(res, 500, 'Could not reset buyer password');
-    }
+  if (typeof active !== 'boolean') {
+    return sendError(res, 400, 'is_active must be true or false');
   }
-);
 
-/* -------------------- ADMIN: DELETE / DISABLE BUYER -------------------- */
+  try {
+    const [result] = await pool.execute(
+      'UPDATE users SET is_active = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?',
+      [active ? 1 : 0, id]
+    );
+    if (!result.affectedRows) return sendError(res, 404, 'Buyer not found');
 
-app.delete(
-  '/api/admin/users/:id',
-  requireAdmin,
-  async (req, res) => {
-    if (!needDb(res)) return;
-
-    const userId = Number(req.params.id);
-
-    if (!Number.isSafeInteger(userId) || userId < 1) {
-      return sendError(res, 400, 'Invalid buyer ID');
-    }
-
-    try {
-      const [result] = await pool.execute(
-        `UPDATE users
-         SET is_active = 0, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [userId]
-      );
-
-      if (!result.affectedRows) {
-        return sendError(res, 404, 'Buyer not found');
-      }
-
+    if (!active) {
       await pool.execute(
         'UPDATE api_keys SET is_active = 0 WHERE user_id = ?',
-        [userId]
+        [id]
       );
-
-      return res.json({
-        success: true,
-        message: 'Buyer deactivated and API keys disabled'
-      });
-    } catch (error) {
-      console.error('[Deactivate buyer]', error.message);
-      return sendError(res, 500, 'Could not deactivate buyer');
     }
+    return res.json({ success: true, message: active ? 'Buyer activated' : 'Buyer deactivated' });
+  } catch (error) {
+    console.error('[Buyer status]', error.message);
+    return sendError(res, 500, 'Could not update buyer status');
   }
-);
+});
 
-/* -------------------- API KEY: CURRENT BUYER -------------------- */
+app.post('/api/admin/users/:id/reset-password', requireAdmin, async (req, res) => {
+  if (!needDb(res)) return;
 
-app.get(
-  '/api/buyer/me',
-  requireBuyer,
-  async (req, res) => {
-    if (!needDb(res)) return;
-
-    try {
-      const [rows] = await pool.execute(
-        `SELECT id, email, is_active, created_at
-         FROM users WHERE id = ? LIMIT 1`,
-        [Number(req.buyer.id)]
-      );
-
-      if (!rows.length) {
-        return sendError(res, 404, 'Buyer not found');
-      }
-
-      return res.json({ success: true, user: rows[0] });
-    } catch (error) {
-      console.error('[Buyer profile]', error.message);
-      return sendError(res, 500, 'Could not load buyer profile');
-    }
+  const id = Number(req.params.id);
+  const password = str(req.body?.password);
+  if (!Number.isSafeInteger(id) || id < 1) return sendError(res, 400, 'Invalid buyer ID');
+  if (password.length < 8 || password.length > 128) {
+    return sendError(res, 400, 'Password must be 8–128 characters');
   }
-);
 
-/* -------------------- STOCK / SCHEDULE API -------------------- */
+  try {
+    const hash = await bcrypt.hash(password, 12);
+    const [result] = await pool.execute(
+      'UPDATE users SET password_hash = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?',
+      [hash, id]
+    );
+    if (!result.affectedRows) return sendError(res, 404, 'Buyer not found');
+    return res.json({ success: true, message: 'Buyer password reset successfully' });
+  } catch (error) {
+    console.error('[Reset password]', error.message);
+    return sendError(res, 500, 'Could not reset buyer password');
+  }
+});
 
-app.get('/api/schedule', requireApiKey, async (req, res) => {
+app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
+  if (!needDb(res)) return;
+
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return sendError(res, 400, 'Invalid buyer ID');
+
+  try {
+    const [result] = await pool.execute(
+      'UPDATE users SET is_active = 0, updated_at = UTC_TIMESTAMP() WHERE id = ?',
+      [id]
+    );
+    if (!result.affectedRows) return sendError(res, 404, 'Buyer not found');
+    await pool.execute('UPDATE api_keys SET is_active = 0 WHERE user_id = ?', [id]);
+    return res.json({ success: true, message: 'Buyer deactivated and API keys disabled' });
+  } catch (error) {
+    console.error('[Deactivate buyer]', error.message);
+    return sendError(res, 500, 'Could not deactivate buyer');
+  }
+});
+
+app.get('/api/buyer/me', requireBuyer, async (req, res) => {
   if (!needDb(res)) return;
 
   try {
     const [rows] = await pool.execute(
-      'SELECT * FROM stocks ORDER BY id ASC LIMIT 500'
+      'SELECT id, email, is_active, created_at FROM users WHERE id = ? LIMIT 1',
+      [req.buyer.id]
     );
+    if (!rows.length) return sendError(res, 404, 'Buyer not found');
+    return res.json({ success: true, user: rows[0] });
+  } catch (error) {
+    console.error('[Buyer profile]', error.message);
+    return sendError(res, 500, 'Could not load buyer profile');
+  }
+});
 
-    return res.json({
-      success: true,
-      schedule: rows,
-      stocks: rows,
-      recentSpawns: recentEvents
-    });
+/* -------------------- STOCK / SCHEDULE -------------------- */
+
+app.get('/api/schedule', requireApiKey, async (req, res) => {
+  if (!needDb(res)) return;
+  try {
+    const [rows] = await pool.execute('SELECT * FROM stocks ORDER BY id ASC LIMIT 500');
+    return res.json({ success: true, schedule: rows, stocks: rows, recentSpawns: recentEvents });
   } catch (error) {
     console.error('[Schedule]', error.message);
     return sendError(res, 500, 'Could not load schedule');
@@ -958,16 +747,9 @@ app.get('/api/schedule', requireApiKey, async (req, res) => {
 
 app.get('/api/stocks', requireApiKey, async (req, res) => {
   if (!needDb(res)) return;
-
   try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM stocks ORDER BY id ASC LIMIT 500'
-    );
-
-    return res.json({
-      success: true,
-      stocks: rows
-    });
+    const [rows] = await pool.execute('SELECT * FROM stocks ORDER BY id ASC LIMIT 500');
+    return res.json({ success: true, stocks: rows });
   } catch (error) {
     console.error('[Stocks]', error.message);
     return sendError(res, 500, 'Could not load stocks');
@@ -978,17 +760,9 @@ app.get('/api/stocks', requireApiKey, async (req, res) => {
 
 app.get('/api/admin/egg-map', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
-
   try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM egg_pet_map ORDER BY id ASC LIMIT 1000'
-    );
-
-    return res.json({
-      success: true,
-      eggMap: rows,
-      items: rows
-    });
+    const [rows] = await pool.execute('SELECT * FROM egg_pet_map ORDER BY id ASC LIMIT 1000');
+    return res.json({ success: true, eggMap: rows, items: rows });
   } catch (error) {
     console.error('[Egg map read]', error.message);
     return sendError(res, 500, 'Could not load egg map');
@@ -999,104 +773,132 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
 
   const items = req.body?.items || req.body?.eggMap;
-
   if (!Array.isArray(items) || items.length > 500) {
     return sendError(res, 400, 'items must be an array of up to 500 entries');
   }
 
-  /*
-   * The schema shared earlier did not establish the exact egg_pet_map
-   * columns or its unique key. Do not silently delete/rebuild the table.
-   * Configure the column mapping here after checking schema.sql.
-   */
-  return sendError(
-    res,
-    501,
-    'Egg map saving needs the exact egg_pet_map schema and column mapping'
-  );
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    for (const item of items) {
+      const eggName = str(item.egg_name || item.eggName);
+      const petName = str(item.pet_name || item.petName);
+      const image = str(item.pet_image_url || item.petImageUrl);
+      const tier = str(item.tier);
+      const active = item.is_active === false ? 0 : 1;
+
+      if (!eggName || !petName) {
+        throw new Error('Each egg-map item requires egg_name and pet_name');
+      }
+
+      await connection.execute(
+        `INSERT INTO egg_pet_map
+         (egg_name, pet_name, pet_image_url, tier, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE
+           pet_name = VALUES(pet_name),
+           pet_image_url = VALUES(pet_image_url),
+           tier = VALUES(tier),
+           is_active = VALUES(is_active),
+           updated_at = UTC_TIMESTAMP()`,
+        [eggName, petName, image || null, tier || null, active]
+      );
+    }
+
+    await connection.commit();
+    return res.json({ success: true, saved: items.length });
+  } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch {}
+    }
+    console.error('[Egg map save]', error.message);
+    return sendError(res, 400, 'Could not save egg map. Check schema and item fields.');
+  } finally {
+    if (connection) connection.release();
+  }
 });
 
 /* -------------------- DISCORD WEBHOOK -------------------- */
 
-// GET diagnostic: opening this URL in a browser should confirm
-// that the route exists. Actual Discord events must use POST.
 app.get('/api/bot-webhook', (req, res) => {
-  return res.status(200).json({
+  res.json({
     success: true,
     endpoint: '/api/bot-webhook',
-    methodRequired: 'POST',
-    message: 'Webhook route is available.'
+    methodRequired: 'POST'
   });
 });
 
-// POST: receives spawn alerts from the Discord bot.
-app.post('/api/bot-webhook', (req, res) => {
+app.post('/api/bot-webhook', async (req, res) => {
   if (!WEBHOOK_SECRET) {
     return sendError(res, 503, 'Webhook secret is not configured');
   }
 
-  const suppliedSecret =
+  const supplied =
     str(req.headers['x-webhook-secret']) ||
     str(req.headers['x-api-key']) ||
     str(req.query.secret);
 
-  if (!safeEqual(suppliedSecret, WEBHOOK_SECRET)) {
+  if (!safeEqual(supplied, WEBHOOK_SECRET)) {
     return sendError(res, 401, 'Invalid webhook secret');
   }
 
   const body = req.body || {};
-  const payload =
-    body.data && typeof body.data === 'object'
-      ? body.data
-      : body;
-
+  const payload = body.data && typeof body.data === 'object' ? body.data : body;
   const messageId = str(
-    payload.messageId ||
-    payload.message_id ||
-    body.messageId ||
-    body.message_id ||
-    body.id
+    payload.messageId || payload.message_id || body.messageId || body.message_id || body.id
   );
 
   if (messageId && seenMessageIds.has(messageId)) {
-    return res.json({
-      success: true,
-      duplicate: true
-    });
+    return res.json({ success: true, duplicate: true });
+  }
+
+  // Persist the message ID when a database is available, so duplicates
+  // can be rejected across process restarts.
+  if (messageId && pool && databaseConnected) {
+    try {
+      await pool.execute(
+        'INSERT INTO processed_messages (message_id, processed_at) VALUES (?, UTC_TIMESTAMP())',
+        [messageId]
+      );
+    } catch (error) {
+      if (error.code === 'ER_DUP_ENTRY') {
+        seenMessageIds.add(messageId);
+        return res.json({ success: true, duplicate: true });
+      }
+      console.error('[Webhook deduplication]', error.message);
+      return sendError(res, 500, 'Could not record webhook message');
+    }
   }
 
   const result = publishSpawn({
     tier: payload.tier || payload.rarity,
     eggName: payload.eggName || payload.egg_name || payload.egg,
     petName: payload.petName || payload.pet_name || payload.pet,
-    location: payload.location || payload.biome,
-    biome: payload.biome || payload.location,
-    time: payload.time || payload.timestamp || payload.spawnedAt,
-    source: payload.source || 'discord',
-    messageId,
-    rawMessage: payload.rawMessage || payload.raw_message
+    time: payload.time || payload.timestamp || payload.spawnedAt
   });
 
   if (!result.ok) {
+    if (messageId && pool && databaseConnected) {
+      try {
+        await pool.execute('DELETE FROM processed_messages WHERE message_id = ?', [messageId]);
+      } catch {}
+    }
     return sendError(res, 400, result.error);
   }
 
   if (messageId) {
     seenMessageIds.add(messageId);
-
     if (seenMessageIds.size > 5000) {
-      const oldestId = seenMessageIds.values().next().value;
-      seenMessageIds.delete(oldestId);
+      seenMessageIds.delete(seenMessageIds.values().next().value);
     }
   }
 
-  return res.json({
-    success: true,
-    event: result.event
-  });
+  return res.json({ success: true, event: result.event });
 });
 
-/* -------------------- DISCORD CHANNEL CHECK -------------------- */
+/* -------------------- CONFIG / SPAWN EVENTS -------------------- */
 
 app.get('/api/config', (req, res) => {
   res.json({
@@ -1107,40 +909,26 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.get('/api/spawn-events', requireApiKey, (req, res) => {
+  res.json({
+    success: true,
+    events: recentEvents,
+    lastWebhookAt,
+    lastMessage
+  });
+});
+
 /* -------------------- SERVER-SENT EVENTS -------------------- */
 
 app.get('/events', async (req, res) => {
   if (!needDb(res)) return;
 
-  /*
-   * EventSource cannot set arbitrary headers in browsers.
-   * This endpoint accepts apiKey in the query string for OBS/browser use.
-   * Query parameters can appear in logs, so use HTTPS and avoid logging
-   * full request URLs. Header-based auth is preferable where supported.
-   */
   const apiKey = str(req.query.apiKey);
-
-  if (!apiKey) {
-    return sendError(res, 401, 'API key required');
-  }
+  if (!apiKey) return sendError(res, 401, 'API key required');
 
   try {
-    const keyHash = hashApiKey(apiKey);
-
-    const [rows] = await pool.execute(
-      `SELECT k.id, k.user_id
-       FROM api_keys k
-       INNER JOIN users u ON u.id = k.user_id
-       WHERE k.key_hash = ?
-         AND k.is_active = 1
-         AND u.is_active = 1
-       LIMIT 1`,
-      [keyHash]
-    );
-
-    if (!rows.length) {
-      return sendError(res, 401, 'Invalid API key or inactive buyer');
-    }
+    const record = await findValidApiKey(apiKey);
+    if (!record) return sendError(res, 401, 'Invalid or inactive API key');
   } catch (error) {
     console.error('[SSE auth]', error.message);
     return sendError(res, 500, 'Could not authenticate event stream');
@@ -1152,10 +940,8 @@ app.get('/events', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-
   res.write('retry: 3000\n\n');
 
-  // Send recent events to a newly connected client.
   for (const event of recentEvents) {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   }
@@ -1177,17 +963,6 @@ app.get('/events', async (req, res) => {
   });
 });
 
-/* -------------------- RECENT SPAWN EVENTS -------------------- */
-
-app.get('/api/spawn-events', requireApiKey, (req, res) => {
-  res.json({
-    success: true,
-    events: recentEvents,
-    lastWebhookAt,
-    lastMessage
-  });
-});
-
 /* -------------------- STATIC PAGES -------------------- */
 
 app.use(express.static(PUBLIC_DIR, {
@@ -1197,79 +972,45 @@ app.use(express.static(PUBLIC_DIR, {
   maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0
 }));
 
-app.get('/', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'index.html');
+const pageRoutes = {
+  '/': 'index.html',
+  '/login': 'login.html',
+  '/get-key': 'get-key.html',
+  '/generator': 'generator.html',
+  '/master': 'master.html',
+  '/admin': 'admin.html'
+};
 
-  if (fs.existsSync(file)) {
-    return res.sendFile(file);
-  }
+for (const [route, filename] of Object.entries(pageRoutes)) {
+  app.get(route, (req, res, next) => {
+    const file = path.join(PUBLIC_DIR, filename);
+    if (fs.existsSync(file)) return res.sendFile(file);
+    next();
+  });
+}
 
-  next();
-});
-
-app.get('/login', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'login.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.get('/get-key', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'get-key.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.get('/generator', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'generator.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.get('/master', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'master.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.get('/admin', (req, res, next) => {
-  const file = path.join(PUBLIC_DIR, 'admin.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-/* -------------------- 404 AND ERROR HANDLING -------------------- */
+/* -------------------- 404 / ERROR HANDLING -------------------- */
 
 app.use((req, res) => {
   if (req.path.startsWith('/api/') || req.path === '/events') {
     return sendError(res, 404, 'Endpoint not found');
   }
 
-  const errorPage = path.join(PUBLIC_DIR, '404.html');
-
-  if (fs.existsSync(errorPage)) {
-    return res.status(404).sendFile(errorPage);
-  }
-
+  const file = path.join(PUBLIC_DIR, '404.html');
+  if (fs.existsSync(file)) return res.status(404).sendFile(file);
   return res.status(404).send('404 - Not Found');
 });
 
 app.use((error, req, res, next) => {
   console.error('[Unhandled request error]', error.message || error);
-
-  if (res.headersSent) {
-    return next(error);
-  }
+  if (res.headersSent) return next(error);
 
   if (req.path.startsWith('/api/') || req.path === '/events') {
     return sendError(res, 500, 'Internal server error');
   }
 
-  const errorPage = path.join(PUBLIC_DIR, '500.html');
-
-  if (fs.existsSync(errorPage)) {
-    return res.status(500).sendFile(errorPage);
-  }
-
+  const file = path.join(PUBLIC_DIR, '500.html');
+  if (fs.existsSync(file)) return res.status(500).sendFile(file);
   return res.status(500).send('500 - Internal Server Error');
 });
 
@@ -1281,12 +1022,7 @@ async function start() {
 
     if (pool) {
       await checkDatabase();
-
-      if (databaseConnected) {
-        console.log('[Database] Connection successful');
-      } else {
-        console.error('[Database] Connection failed; check DB settings');
-      }
+      console.log(`[Database] Connected: ${databaseConnected}`);
     }
 
     const server = app.listen(PORT, '0.0.0.0', () => {
@@ -1294,30 +1030,24 @@ async function start() {
       console.log(`[Backend] Node ${process.version}`);
       console.log(`[Backend] Public directory: ${PUBLIC_DIR}`);
       console.log(`[Backend] Database connected: ${databaseConnected}`);
-      console.log(`[Backend] Discord channel configured: ${Boolean(DISCORD_CHANNEL_ID)}`);
 
-      if (!JWT_SECRET || JWT_SECRET.length < 32) {
-        console.warn('[Security] Set a strong JWT_SECRET (32+ characters)');
+      if (JWT_SECRET.length < 32) {
+        console.warn('[Security] Configure JWT_SECRET with 32+ characters');
       }
-
       if (!MASTER_USERNAME || !MASTER_PASSWORD) {
-        console.warn('[Security] MASTER_USERNAME / MASTER_PASSWORD not configured');
+        console.warn('[Security] Configure MASTER_USERNAME and MASTER_PASSWORD');
       }
-
       if (!WEBHOOK_SECRET) {
-        console.warn('[Security] WEBHOOK_SECRET not configured');
+        console.warn('[Security] WEBHOOK_SECRET is not configured');
       }
     });
 
-    const shutdown = signal => {
-      console.log(`[Backend] ${signal} received; shutting down`);
+    function shutdown(signal) {
+      console.log(`[Backend] ${signal} received`);
 
       for (const client of CLIENTS) {
-        try {
-          client.end();
-        } catch {}
+        try { client.end(); } catch {}
       }
-
       CLIENTS.clear();
 
       server.close(async () => {
@@ -1326,17 +1056,16 @@ async function start() {
         } catch (error) {
           console.error('[Database shutdown]', error.message);
         }
-
         process.exit(0);
       });
 
       setTimeout(() => process.exit(1), 10000).unref();
-    };
+    }
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
   } catch (error) {
-    console.error('[Startup error]', error.message || error);
+    console.error('[Startup error]', error.stack || error.message || error);
     process.exitCode = 1;
   }
 }
@@ -1345,7 +1074,6 @@ start();
 
 module.exports = {
   app,
-  publishSpawn
+  publishSpawn,
+  checkDatabase
 };
-
-
