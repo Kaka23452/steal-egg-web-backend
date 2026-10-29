@@ -486,14 +486,14 @@
       }
 
       if (rotate) {
-        const confirmed = window.confirm(
-          "Rotate the API key? Your previous key may stop working immediately."
-        );
+  const confirmed = window.confirm(
+    "Rotate the API key? Your previous key may stop working immediately."
+  );
 
-        if (!confirmed) {
-          return;
-        }
-      }
+  if (!confirmed) {
+    return;
+  }
+}
 
       const endpoint = rotate
         ? "/api/buyer/rotate-key"
