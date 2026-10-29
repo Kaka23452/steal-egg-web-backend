@@ -1035,7 +1035,97 @@ app.post('/api/bot-webhook', async (req, res) => {
       return sendError(res, 500, 'Could not record webhook message');
     }
   }
+  // STOCK_PERSISTENCE_PATCH_V1
+  const stockTier = normalizeTier(payload.tier || payload.rarity);
+  const stockEggName = str(
+    payload.eggName || payload.egg_name || payload.egg
+  );
 
+  if (!stockTier || !stockEggName) {
+    if (messageId && pool && databaseConnected) {
+      try {
+        await pool.execute(
+          'DELETE FROM processed_messages WHERE message_id = ?',
+          [messageId]
+        );
+      } catch (error) {
+        console.error('[Webhook deduplication cleanup]', error.message);
+      }
+    }
+
+    return sendError(
+      res,
+      400,
+      'Supported tier and eggName are required'
+    );
+  }
+
+  const suppliedTime =
+    payload.time || payload.timestamp || payload.spawnedAt;
+
+  const parsedSpawnTime = suppliedTime
+    ? new Date(suppliedTime)
+    : new Date();
+
+  const spawnDate = Number.isNaN(parsedSpawnTime.getTime())
+    ? new Date()
+    : parsedSpawnTime;
+
+  const sqlDateTime = date =>
+    date.toISOString().slice(0, 19).replace('T', ' ');
+
+  const spawnedAt = sqlDateTime(spawnDate);
+  const expiresAt = sqlDateTime(
+    new Date(spawnDate.getTime() + 300 * 1000)
+  );
+
+  try {
+    await pool.execute(
+      `INSERT INTO stocks
+       (tier, egg_name, pet_name, pet_image_url, location_name,
+        spawned_at, expires_at, source_message_id,
+        created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+      [
+        stockTier,
+        stockEggName,
+        str(payload.petName || payload.pet_name || payload.pet) || null,
+        str(
+          payload.location ||
+          payload.spawnLocation ||
+          payload.spawn_location
+        ) || null,
+        spawnedAt,
+        expiresAt,
+        messageId || null
+      ]
+    );
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      if (messageId) {
+        seenMessageIds.add(messageId);
+      }
+      return res.json({ success: true, duplicate: true });
+    }
+
+    console.error('[Stock persistence]', error.message);
+
+    if (messageId && pool && databaseConnected) {
+      try {
+        await pool.execute(
+          'DELETE FROM processed_messages WHERE message_id = ?',
+          [messageId]
+        );
+      } catch (cleanupError) {
+        console.error(
+          '[Webhook deduplication cleanup]',
+          cleanupError.message
+        );
+      }
+    }
+
+    return sendError(res, 500, 'Could not save spawn stock');
+  }
   const result = publishSpawn({
     tier: payload.tier || payload.rarity,
     eggName: payload.eggName || payload.egg_name || payload.egg,
