@@ -1034,31 +1034,22 @@ app.post('/api/bot-webhook', async (req, res) => {
     }
   }
 
-  const result = publishSpawn({
-    tier: payload.tier || payload.rarity,
-    eggName: payload.eggName || payload.egg_name || payload.egg,
-    petName: payload.petName || payload.pet_name || payload.pet,
-    time: payload.time || payload.timestamp || payload.spawnedAt
-  });
-
-  if (!result.ok) {
-    if (messageId && pool && databaseConnected) {
-      try {
-        await pool.execute('DELETE FROM processed_messages WHERE message_id = ?', [messageId]);
-      } catch {}
-    }
-    return sendError(res, 400, result.error);
-  }
-
-  if (messageId) {
-    seenMessageIds.add(messageId);
-    if (seenMessageIds.size > 5000) {
-      seenMessageIds.delete(seenMessageIds.values().next().value);
-    }
-  }
-
-  return res.json({ success: true, event: result.event });
+  
+const result = publishSpawn({
+  tier: payload.tier || payload.rarity,
+  eggName: payload.eggName || payload.egg_name || payload.egg,
+  petName: payload.petName || payload.pet_name || payload.pet,
+  location:
+    payload.location ||
+    payload.spawnLocation ||
+    payload.spawn_location,
+  spawned:
+    payload.spawned ||
+    payload.spawnedLabel ||
+    payload.spawned_label,
+  time: payload.time || payload.timestamp || payload.spawnedAt
 });
+
 
 /* -------------------- CONFIG / SPAWN EVENTS -------------------- */
 
