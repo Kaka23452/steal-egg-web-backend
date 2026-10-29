@@ -820,6 +820,26 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
   }
 });
 
+/* -------------------- EGG / PET MAP -------------------- */
+
+// Existing GET route — preserve
+app.get('/api/admin/egg-map', requireAdmin, async (req, res) => {
+  // Aapka existing GET code, unchanged
+});
+
+// Existing POST route — preserve
+app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
+  // Aapka existing POST code, unchanged
+});
+
+// Naya PUT route yahan add hoga
+app.put('/api/admin/egg-map/:id', requireAdmin, async (req, res) => {
+  // Pichhle message wala complete PUT handler
+});
+
+/* -------------------- DISCORD WEBHOOK -------------------- */
+
+// Existing Discord webhook code — preserve
 /* -------------------- DISCORD WEBHOOK -------------------- */
 
 app.get('/api/bot-webhook', (req, res) => {
