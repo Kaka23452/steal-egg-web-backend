@@ -804,7 +804,12 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
       const petName = str(item.pet_name || item.petName);
       const image = str(item.pet_image_url || item.petImageUrl);
       const tier = str(item.tier);
-      const active = item.is_active === false ? 0 : 1;
+      const active =
+  item.is_active === false ||
+  item.is_active === 0 ||
+  item.is_active === '0'
+    ? 0
+    : 1;
 
       if (!eggName || !petName) {
         throw new Error(
