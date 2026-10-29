@@ -978,11 +978,8 @@ app.put('/api/admin/egg-map/:id', requireAdmin, async (req, res) => {
 
 /* -------------------- END EGG / PET MAP -------------------- */
 
+
 /* -------------------- DISCORD WEBHOOK -------------------- */
-
-// Is comment ke baad apna original Discord webhook code
-// bilkul unchanged rehne dein.
-
 
 app.get('/api/bot-webhook', (req, res) => {
   res.json({
@@ -1007,17 +1004,21 @@ app.post('/api/bot-webhook', async (req, res) => {
   }
 
   const body = req.body || {};
-  const payload = body.data && typeof body.data === 'object' ? body.data : body;
+  const payload =
+    body.data && typeof body.data === 'object' ? body.data : body;
+
   const messageId = str(
-    payload.messageId || payload.message_id || body.messageId || body.message_id || body.id
+    payload.messageId ||
+    payload.message_id ||
+    body.messageId ||
+    body.message_id ||
+    body.id
   );
 
   if (messageId && seenMessageIds.has(messageId)) {
     return res.json({ success: true, duplicate: true });
   }
 
-  // Persist the message ID when a database is available, so duplicates
-  // can be rejected across process restarts.
   if (messageId && pool && databaseConnected) {
     try {
       await pool.execute(
@@ -1029,29 +1030,61 @@ app.post('/api/bot-webhook', async (req, res) => {
         seenMessageIds.add(messageId);
         return res.json({ success: true, duplicate: true });
       }
+
       console.error('[Webhook deduplication]', error.message);
       return sendError(res, 500, 'Could not record webhook message');
     }
   }
 
-  
-const result = publishSpawn({
-  tier: payload.tier || payload.rarity,
-  eggName: payload.eggName || payload.egg_name || payload.egg,
-  petName: payload.petName || payload.pet_name || payload.pet,
-  location:
-    payload.location ||
-    payload.spawnLocation ||
-    payload.spawn_location,
-  spawned:
-    payload.spawned ||
-    payload.spawnedLabel ||
-    payload.spawned_label,
-  time: payload.time || payload.timestamp || payload.spawnedAt
+  const result = publishSpawn({
+    tier: payload.tier || payload.rarity,
+    eggName: payload.eggName || payload.egg_name || payload.egg,
+    petName: payload.petName || payload.pet_name || payload.pet,
+    location:
+      payload.location ||
+      payload.spawnLocation ||
+      payload.spawn_location,
+    spawned:
+      payload.spawned ||
+      payload.spawnedLabel ||
+      payload.spawned_label,
+    time:
+      payload.time ||
+      payload.timestamp ||
+      payload.spawnedAt
+  });
+
+  if (!result.ok) {
+    if (messageId && pool && databaseConnected) {
+      try {
+        await pool.execute(
+          'DELETE FROM processed_messages WHERE message_id = ?',
+          [messageId]
+        );
+      } catch (error) {
+        console.error('[Webhook deduplication cleanup]', error.message);
+      }
+    }
+
+    return sendError(res, 400, result.error);
+  }
+
+  if (messageId) {
+    seenMessageIds.add(messageId);
+
+    if (seenMessageIds.size > 5000) {
+      seenMessageIds.delete(seenMessageIds.values().next().value);
+    }
+  }
+
+  return res.json({
+    success: true,
+    event: result.event
+  });
 });
 
-
 /* -------------------- CONFIG / SPAWN EVENTS -------------------- */
+
 
 app.get('/api/config', (req, res) => {
   res.json({
