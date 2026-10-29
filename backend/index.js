@@ -756,28 +756,45 @@ app.get('/api/stocks', requireApiKey, async (req, res) => {
   }
 });
 
+
 /* -------------------- EGG / PET MAP -------------------- */
 
+// GET: Load existing egg/pet mappings
 app.get('/api/admin/egg-map', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
+
   try {
-    const [rows] = await pool.execute('SELECT * FROM egg_pet_map ORDER BY id ASC LIMIT 1000');
-    return res.json({ success: true, eggMap: rows, items: rows });
+    const [rows] = await pool.execute(
+      'SELECT * FROM egg_pet_map ORDER BY id ASC LIMIT 1000'
+    );
+
+    return res.json({
+      success: true,
+      eggMap: rows,
+      items: rows
+    });
   } catch (error) {
     console.error('[Egg map read]', error.message);
     return sendError(res, 500, 'Could not load egg map');
   }
 });
 
+// POST: Create or bulk-save egg/pet mappings
 app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
   if (!needDb(res)) return;
 
   const items = req.body?.items || req.body?.eggMap;
+
   if (!Array.isArray(items) || items.length > 500) {
-    return sendError(res, 400, 'items must be an array of up to 500 entries');
+    return sendError(
+      res,
+      400,
+      'items must be an array of up to 500 entries'
+    );
   }
 
   let connection;
+
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -790,12 +807,15 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
       const active = item.is_active === false ? 0 : 1;
 
       if (!eggName || !petName) {
-        throw new Error('Each egg-map item requires egg_name and pet_name');
+        throw new Error(
+          'Each egg-map item requires egg_name and pet_name'
+        );
       }
 
       await connection.execute(
         `INSERT INTO egg_pet_map
-         (egg_name, pet_name, pet_image_url, tier, is_active, created_at, updated_at)
+         (egg_name, pet_name, pet_image_url, tier, is_active,
+          created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
          ON DUPLICATE KEY UPDATE
            pet_name = VALUES(pet_name),
@@ -808,39 +828,118 @@ app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
     }
 
     await connection.commit();
-    return res.json({ success: true, saved: items.length });
+
+    return res.json({
+      success: true,
+      saved: items.length
+    });
   } catch (error) {
     if (connection) {
-      try { await connection.rollback(); } catch {}
+      try {
+        await connection.rollback();
+      } catch {}
     }
+
     console.error('[Egg map save]', error.message);
-    return sendError(res, 400, 'Could not save egg map. Check schema and item fields.');
+
+    return sendError(
+      res,
+      400,
+      'Could not save egg map. Check schema and item fields.'
+    );
   } finally {
     if (connection) connection.release();
   }
 });
 
-/* -------------------- EGG / PET MAP -------------------- */
-
-// Existing GET route — preserve
-app.get('/api/admin/egg-map', requireAdmin, async (req, res) => {
-  // Aapka existing GET code, unchanged
-});
-
-// Existing POST route — preserve
-app.post('/api/admin/egg-map', requireAdmin, async (req, res) => {
-  // Aapka existing POST code, unchanged
-});
-
-// Naya PUT route yahan add hoga
+// PUT: Edit one existing egg/pet mapping by its database ID
 app.put('/api/admin/egg-map/:id', requireAdmin, async (req, res) => {
-  // Pichhle message wala complete PUT handler
+  if (!needDb(res)) return;
+
+  const id = Number(req.params.id);
+
+  if (!Number.isSafeInteger(id) || id < 1) {
+    return sendError(res, 400, 'Invalid mapping ID');
+  }
+
+  const body = req.body || {};
+
+  const eggName = str(body.egg_name || body.eggName);
+  const petName = str(body.pet_name || body.petName);
+  const image = str(body.pet_image_url || body.petImageUrl);
+  const tier = str(body.tier);
+
+  const active =
+    body.is_active === false ||
+    body.is_active === 0 ||
+    body.is_active === '0'
+      ? 0
+      : 1;
+
+  if (!eggName || !petName) {
+    return sendError(
+      res,
+      400,
+      'egg_name and pet_name are required'
+    );
+  }
+
+  try {
+    const [existing] = await pool.execute(
+      'SELECT id FROM egg_pet_map WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (!existing.length) {
+      return sendError(res, 404, 'Egg mapping not found');
+    }
+
+    await pool.execute(
+      `UPDATE egg_pet_map
+       SET egg_name = ?,
+           pet_name = ?,
+           pet_image_url = ?,
+           tier = ?,
+           is_active = ?,
+           updated_at = UTC_TIMESTAMP()
+       WHERE id = ?`,
+      [
+        eggName,
+        petName,
+        image || null,
+        tier || null,
+        active,
+        id
+      ]
+    );
+
+    return res.json({
+      success: true,
+      updated: 1,
+      id
+    });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return sendError(
+        res,
+        409,
+        'An egg mapping with this egg name already exists'
+      );
+    }
+
+    console.error('[Egg map update]', error.message);
+
+    return sendError(res, 500, 'Could not update egg mapping');
+  }
 });
 
+/* -------------------- END EGG / PET MAP -------------------- */
+
 /* -------------------- DISCORD WEBHOOK -------------------- */
 
-// Existing Discord webhook code — preserve
-/* -------------------- DISCORD WEBHOOK -------------------- */
+// Is comment ke baad apna original Discord webhook code
+// bilkul unchanged rehne dein.
+
 
 app.get('/api/bot-webhook', (req, res) => {
   res.json({
