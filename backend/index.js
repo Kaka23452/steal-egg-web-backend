@@ -340,14 +340,51 @@ function broadcastEvent(event) {
   }
 }
 
+
 function publishSpawn(input) {
   const tier = normalizeTier(input.tier || input.rarity);
   const eggName = str(input.eggName || input.egg_name || input.egg);
   const petName = str(input.petName || input.pet_name || input.pet);
-  const time = input.time || input.timestamp || new Date().toISOString();
+  const location = str(
+    input.location || input.spawnLocation || input.spawn_location
+  );
+  const time = input.time || input.timestamp || input.spawnedAt ||
+    new Date().toISOString();
+
+  let spawned = str(
+    input.spawned || input.spawnedLabel || input.spawned_label
+  );
+
+  // If no human-readable label was supplied, derive it from the spawn time.
+  if (!spawned) {
+    const parsedTime = new Date(time);
+    if (!Number.isNaN(parsedTime.getTime())) {
+      const elapsedSeconds = Math.max(
+        0, Math.floor((Date.now() - parsedTime.getTime()) / 1000)
+      );
+
+      if (elapsedSeconds < 60) {
+        spawned = elapsedSeconds <= 5
+          ? 'Just now'
+          : `${elapsedSeconds} seconds ago`;
+      } else if (elapsedSeconds < 3600) {
+        const minutes = Math.floor(elapsedSeconds / 60);
+        spawned = `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+      } else if (elapsedSeconds < 86400) {
+        const hours = Math.floor(elapsedSeconds / 3600);
+        spawned = `${hours} hour${hours === 1 ? '' : 's'} ago`;
+      } else {
+        const days = Math.floor(elapsedSeconds / 86400);
+        spawned = `${days} day${days === 1 ? '' : 's'} ago`;
+      }
+    }
+  }
 
   if (!tier || !eggName) {
-    return { ok: false, error: 'Supported tier and eggName are required' };
+    return {
+      ok: false,
+      error: 'Supported tier and eggName are required'
+    };
   }
 
   const event = {
@@ -355,6 +392,8 @@ function publishSpawn(input) {
     tier,
     eggName,
     petName: petName || null,
+    location: location || null,
+    spawned: spawned || null,
     time,
     receivedAt: new Date().toISOString()
   };
@@ -370,7 +409,6 @@ function publishSpawn(input) {
   return { ok: true, event };
 }
 
-loadSpawnEvents();
 
 /* -------------------- HEALTH -------------------- */
 
