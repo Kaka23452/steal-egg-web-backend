@@ -1,4 +1,3 @@
-
 'use strict';
 
 /*
@@ -340,6 +339,39 @@ function broadcastEvent(event) {
   }
 }
 
+/* WORLD_EVENT_PATCH_V1 — Discord world events (Butterfly Bloom / Tidal Surge).
+   Ye pet spawn NAHI hote (inme tier/eggName nahi hota), isiliye publishSpawn
+   inhe 400 dekar phenk deta tha. Ye function inhe SSE par bhejta hai taaki
+   dashboard par popup + voice + time sync chale. */
+function publishWorldEvent(kind, text, payload) {
+  const name = kind === 'butterfly' ? 'BUTTERFLY BLOOM' : 'TIDAL SURGE';
+  const messageId = str(
+    (payload && (payload.messageId || payload.message_id)) || ''
+  );
+  const event = {
+    id: messageId || null,
+    messageId: messageId || null,
+    type: 'WORLD_EVENT',
+    kind,
+    name,
+    rawMessage: text,
+    content: text,
+    description: text,
+    time: (payload && (payload.time || payload.timestamp || payload.spawnedAt)) || new Date().toISOString(),
+    receivedAt: new Date().toISOString()
+  };
+  try {
+    recentEvents.push(event);
+    if (recentEvents.length > 100) recentEvents.splice(0, recentEvents.length - 100);
+  } catch (e) {}
+  try {
+    const line = 'data: ' + JSON.stringify(event) + '\n\n';
+    for (const client of CLIENTS) { try { client.write(line); } catch (e) {} }
+  } catch (e) {}
+  lastWebhookAt = new Date().toISOString();
+  lastMessage = event;
+  return event;
+}
 
 function publishSpawn(input) {
   const tier = normalizeTier(input.tier || input.rarity);
@@ -1033,6 +1065,31 @@ app.post('/api/bot-webhook', async (req, res) => {
 
       console.error('[Webhook deduplication]', error.message);
       return sendError(res, 500, 'Could not record webhook message');
+    }
+  }
+  // WORLD_EVENT_PATCH_V1 — world events ko tier/eggName wale check se pehle pakdo
+  {
+    const worldTextParts = [];
+    const wt = payload.content || payload.rawMessage || payload.text || payload.description || payload.message;
+    if (typeof wt === 'string' && wt) worldTextParts.push(wt);
+    const embList = payload.embeds || body.embeds;
+    if (Array.isArray(embList)) {
+      for (const emb of embList) {
+        if (!emb) continue;
+        if (typeof emb.title === 'string' && emb.title) worldTextParts.push(emb.title);
+        if (typeof emb.description === 'string' && emb.description) worldTextParts.push(emb.description);
+        if (Array.isArray(emb.fields)) for (const f of emb.fields) if (f && typeof f.value === 'string') worldTextParts.push((f.name || '') + ': ' + f.value);
+      }
+    }
+    const worldText = worldTextParts.join('\n');
+    const worldKind = /butterfly\s*bloom/i.test(worldText) ? 'butterfly' : (/tidal\s*surge/i.test(worldText) ? 'tidal' : null);
+    if (worldKind) {
+      const worldEvent = publishWorldEvent(worldKind, worldText, payload);
+      if (messageId) {
+        seenMessageIds.add(messageId);
+        if (seenMessageIds.size > 5000) seenMessageIds.delete(seenMessageIds.values().next().value);
+      }
+      return res.json({ success: true, event: worldEvent });
     }
   }
   // STOCK_PERSISTENCE_PATCH_V1
